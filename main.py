@@ -6,6 +6,8 @@ import json
 from typing import Any, Dict, List, Optional
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 import websockets
@@ -16,8 +18,21 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("delta-ai-bot")
 
 BASE_URL = os.getenv("DELTA_BASE_URL", "https://api.india.delta.exchange").rstrip("/")
-TIMEOUT = 15
+# Public Delta API calls can be briefly slow; retry transient GET failures.
+TIMEOUT = 30
 SESSION = requests.Session()
+_RETRY = Retry(
+    total=2,
+    connect=2,
+    read=2,
+    backoff_factor=0.5,
+    status_forcelist=(429, 500, 502, 503, 504),
+    allowed_methods=frozenset(["GET"]),
+    raise_on_status=False,
+)
+_ADAPTER = HTTPAdapter(max_retries=_RETRY, pool_connections=10, pool_maxsize=10)
+SESSION.mount("https://", _ADAPTER)
+SESSION.mount("http://", _ADAPTER)
 SESSION.headers.update({"Accept": "application/json", "User-Agent": "Delta-AI-Trading-Bot-V2/1.0"})
 
 def delta_get(path: str, params: Optional[dict] = None) -> Any:
