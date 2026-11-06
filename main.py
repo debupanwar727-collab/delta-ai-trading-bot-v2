@@ -94,7 +94,7 @@ def options_chain(
 
 @app.get("/market/candles")
 def candles(
-    asset: str = Query("BTC", pattern="^(BTC|ETH)$"),
+    asset: str = Query("BTC", pattern="^(BTC|ETH|XAUT)$"),
     resolution: str = Query("1h", pattern="^(1m|3m|5m|15m|30m|1h|2h|4h|6h|1d|1w)$"),
     days: int = Query(180, ge=1, le=180)
 ):
@@ -297,8 +297,8 @@ def simple_backtest(
 ):
     """Historical EMA 9/21 long-short crossover test. PAPER_ONLY; never places orders."""
     asset = asset.upper()
-    if asset not in ("BTC", "ETH"):
-        raise HTTPException(status_code=400, detail="asset must be BTC or ETH")
+    if asset not in ("BTC", "ETH", "XAUT"):
+        raise HTTPException(status_code=400, detail="asset must be BTC, ETH or XAUT")
 
     raw_rows = candles(asset, resolution, days)["candles"]
     seconds_by_resolution = {
