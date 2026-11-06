@@ -255,7 +255,8 @@ def options_contract_backtest(
             "mode": "PAPER_ONLY",
             "warning": "Selected option premium candles ka simulation; historical option-chain/Greeks replay nahi. Assumed costs apply. Future profit guaranteed nahi."}
 
-\n@app.get("/signals/{asset}")
+
+@app.get("/signals/{asset}")
 def paper_signal(asset: str, resolution: str = "1h"):
     asset = asset.upper()
     if asset not in ("BTC", "ETH"):
