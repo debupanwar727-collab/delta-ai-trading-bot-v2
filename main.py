@@ -60,16 +60,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
 def home():
-    return {
-        "name": "Delta AI Trading Bot V2",
-        "status": "online",
-        "mode": "PAPER_ONLY",
-        "assets": ["BTC", "ETH"],
-        "docs": "/docs",
-        "warning": "Signals are educational and unvalidated. No real-money orders are placed."
-    }
+    try:
+        with open("dashboard.html", "r", encoding="utf-8") as dashboard:
+            return dashboard.read()
+    except OSError:
+        return HTMLResponse("<h1>Dashboard file not found</h1>", status_code=500)
 
 @app.get("/health")
 def health():
