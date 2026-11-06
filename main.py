@@ -1,10 +1,14 @@
 import os
 import time
 import logging
+import asyncio
+import json
 from typing import Any, Dict, List, Optional
 
 import requests
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse
+import websockets
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
@@ -224,6 +228,142 @@ def simple_backtest(
         "assumptions": "Long-only EMA 9/21 crossover. Excludes fees, slippage, funding, spread and execution delay.",
         "warning": "Illustrative historical test only; past results do not predict future returns."
     }
+
+
+
+# Public real-time market feed. This relays Delta's public WebSocket only.
+DELTA_PUBLIC_WS = "wss://public-socket.india.delta.exchange"
+
+@app.get("/market/live/status")
+def live_market_status():
+    return {
+        "status": "available",
+        "provider": "Delta Exchange public WebSocket",
+        "websocket_path": "/ws/market",
+        "symbols": ["BTCUSD", "ETHUSD"],
+        "channels": ["ticker", "mark_price", "funding_rate", "trades"],
+        "mode": "READ_ONLY",
+        "note": "Public market feed only. No account data or order placement."
+    }
+
+@app.get("/live", response_class=HTMLResponse)
+def live_market_page():
+    return HTMLResponse("""
+<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Delta AI Bot Live Market</title><style>
+body{font-family:Arial,sans-serif;background:#101820;color:#f4f7fa;margin:0;padding:18px}
+h2{margin:4px 0 8px}.muted{color:#aab7c4;font-size:13px}
+.card{background:#1b2a36;border-radius:12px;padding:16px;margin:14px 0}
+.price{font-size:30px;font-weight:bold;margin:8px 0}
+.row{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid #344451}
+#state{padding:9px;border-radius:8px;background:#344451;margin:12px 0}
+</style></head><body>
+<h2>Delta AI Bot — Live Market</h2>
+<div class="muted">BTCUSD / ETHUSD · Delta public WebSocket · Read-only</div>
+<div id="state">Connecting…</div>
+<div class="card"><h3>BTC</h3><div class="price" id="BTC-price">Waiting…</div>
+<div class="row"><span>Mark price</span><b id="BTC-mark">—</b></div>
+<div class="row"><span>Spot price</span><b id="BTC-spot">—</b></div>
+<div class="row"><span>24h change</span><b id="BTC-change">—</b></div>
+<div class="row"><span>Open interest</span><b id="BTC-oi">—</b></div>
+<div class="row"><span>Last update</span><b id="BTC-time">—</b></div></div>
+<div class="card"><h3>ETH</h3><div class="price" id="ETH-price">Waiting…</div>
+<div class="row"><span>Mark price</span><b id="ETH-mark">—</b></div>
+<div class="row"><span>Spot price</span><b id="ETH-spot">—</b></div>
+<div class="row"><span>24h change</span><b id="ETH-change">—</b></div>
+<div class="row"><span>Open interest</span><b id="ETH-oi">—</b></div>
+<div class="row"><span>Last update</span><b id="ETH-time">—</b></div></div>
+<div class="muted">Prices are exchange market data, not trading advice. No orders are placed.</div>
+<script>
+const state=document.getElementById('state');
+const scheme=location.protocol==='https:'?'wss':'ws';
+const ws=new WebSocket(scheme+'://'+location.host+'/ws/market');
+ws.onopen=()=>state.textContent='Connected — waiting for Delta feed';
+ws.onclose=()=>state.textContent='Disconnected — refresh this page to reconnect';
+ws.onerror=()=>state.textContent='Connection error — check Render logs';
+ws.onmessage=(ev)=>{
+ try{
+  const x=JSON.parse(ev.data);
+  if(x.type==='connection'){state.textContent=x.status;return;}
+  const symbol=x.sy||x.symbol||'';
+  const asset=symbol.startsWith('BTC')?'BTC':symbol.startsWith('ETH')?'ETH':null;
+  if(!asset)return;
+  if(x.type==='ticker' && Array.isArray(x.d) && x.d.length){
+   const d=x.d[0], o=d.ohlc||[], oi=d.oi||[];
+   document.getElementById(asset+'-price').textContent=o[3]??'—';
+   document.getElementById(asset+'-mark').textContent=d.m??'—';
+   document.getElementById(asset+'-spot').textContent=x.sp??'—';
+   document.getElementById(asset+'-change').textContent=d.m24hc??'—';
+   document.getElementById(asset+'-oi').textContent=oi[0]??'—';
+   document.getElementById(asset+'-time').textContent=new Date(Number(x.ts||Date.now())/1000).toLocaleTimeString();
+   state.textContent='Live feed active · last update '+new Date().toLocaleTimeString();
+  } else if(x.type==='mark_price'){
+   document.getElementById(asset+'-mark').textContent=x.p??'—';
+   state.textContent='Live mark price update · '+new Date().toLocaleTimeString();
+  }
+ }catch(e){}
+};
+</script></body></html>
+""")
+
+@app.websocket("/ws/market")
+async def live_market_websocket(client: WebSocket):
+    await client.accept()
+    try:
+        async with websockets.connect(
+            DELTA_PUBLIC_WS,
+            ping_interval=20,
+            ping_timeout=10,
+            close_timeout=5,
+            max_size=2**20
+        ) as upstream:
+            subscription = {
+                "type": "subscribe",
+                "payload": {
+                    "channels": [
+                        {"name": "ticker", "symbols": ["BTCUSD", "ETHUSD"]},
+                        {"name": "mark_price", "symbols": ["MARK:BTCUSD", "MARK:ETHUSD"]},
+                        {"name": "funding_rate", "symbols": ["BTCUSD", "ETHUSD"]},
+                        {"name": "trades", "symbols": ["BTCUSD", "ETHUSD"]}
+                    ]
+                }
+            }
+            await upstream.send(json.dumps(subscription))
+            await client.send_json({
+                "type": "connection",
+                "status": "connected to Delta public market feed",
+                "mode": "READ_ONLY"
+            })
+
+            async def relay_market():
+                async for message in upstream:
+                    await client.send_text(message)
+
+            async def watch_disconnect():
+                while True:
+                    await client.receive_text()
+
+            tasks = {
+                asyncio.create_task(relay_market()),
+                asyncio.create_task(watch_disconnect())
+            }
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*done, *pending, return_exceptions=True)
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        log.exception("Live market WebSocket failed")
+        try:
+            await client.send_json({"type": "error", "message": "Live feed disconnected. Refresh to reconnect."})
+        except Exception:
+            pass
+    finally:
+        try:
+            await client.close()
+        except Exception:
+            pass
 
 
 # Read-only MCP tools for compatible AI clients. No order-placement tools are exposed.
