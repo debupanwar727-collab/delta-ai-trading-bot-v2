@@ -191,42 +191,131 @@ def paper_signal(asset: str, resolution: str = "1h"):
 @app.get("/backtest/{asset}")
 def simple_backtest(
     asset: str,
-    resolution: str = "1h",
-    days: int = Query(180, ge=30, le=180)
+    resolution: str = Query("1h", pattern="^(1m|3m|5m|15m|30m|1h|2h|4h|6h|1d|1w)$"),
+    days: int = Query(180, ge=30, le=180),
+    taker_fee_pct: float = Query(0.05, ge=0, le=1, description="Delta India futures taker fee per side, percent of notional; default 0.05%"),
+    gst_pct: float = Query(18.0, ge=0, le=100, description="GST applied to trading fees; default 18%"),
+    slippage_pct: float = Query(0.02, ge=0, le=1, description="Assumed adverse slippage per side, percent; not an exchange fee")
 ):
+    """Historical EMA 9/21 long-short crossover test. PAPER_ONLY; never places orders."""
     asset = asset.upper()
     if asset not in ("BTC", "ETH"):
         raise HTTPException(status_code=400, detail="asset must be BTC or ETH")
-    rows = candles(asset, resolution, days)["candles"]
-    closes = [number(x.get("close")) for x in rows if number(x.get("close")) > 0]
-    if len(closes) < 30:
-        return {"asset": asset, "trades": 0, "message": "Not enough candles"}
-    # Simple EMA crossover research baseline. Fees, slippage and funding are not included.
+
+    raw_rows = candles(asset, resolution, days)["candles"]
+    seconds_by_resolution = {
+        "1m": 60, "3m": 180, "5m": 300, "15m": 900, "30m": 1800,
+        "1h": 3600, "2h": 7200, "4h": 14400, "6h": 21600,
+        "1d": 86400, "1w": 604800
+    }
+    interval = seconds_by_resolution[resolution]
+    now = int(time.time())
+    # Exclude a still-forming candle to avoid using incomplete information.
+    valid_rows = []
+    for row in raw_rows:
+        stamp = int(number(row.get("time")))
+        if stamp > 0 and stamp + interval <= now:
+            op, cl = number(row.get("open")), number(row.get("close"))
+            if op > 0 and cl > 0:
+                valid_rows.append({"time": stamp, "open": op, "close": cl})
+    valid_rows.sort(key=lambda row: row["time"])
+
+    if len(valid_rows) < 30:
+        return {
+            "asset": asset, "resolution": resolution, "candles": len(valid_rows),
+            "trades": 0, "message": "Not enough fully closed candles",
+            "mode": "PAPER_ONLY"
+        }
+
+    closes = [row["close"] for row in valid_rows]
+    alpha_fast, alpha_slow = 2 / 10, 2 / 22
+    ema_fast = [closes[0]]
+    ema_slow = [closes[0]]
+    for price in closes[1:]:
+        ema_fast.append(alpha_fast * price + (1 - alpha_fast) * ema_fast[-1])
+        ema_slow.append(alpha_slow * price + (1 - alpha_slow) * ema_slow[-1])
+
+    fee_rate = (taker_fee_pct / 100) * (1 + gst_pct / 100)
+    slip_rate = slippage_pct / 100
     position = 0
-    entry = 0.0
+    entry_fill = 0.0
     trade_returns = []
-    for i in range(25, len(closes)):
-        fast = sum(closes[i-8:i+1]) / 9
-        slow = sum(closes[i-20:i+1]) / 21
-        desired = 1 if fast > slow else 0
-        if position and not desired:
-            trade_returns.append((closes[i] - entry) / entry)
-            position = 0
-        elif not position and desired:
-            entry = closes[i]
-            position = 1
-    if position:
-        trade_returns.append((closes[-1] - entry) / entry)
-    equity = 1.0
-    for ret in trade_returns:
-        equity *= (1 + ret)
-    wins = sum(1 for x in trade_returns if x > 0)
+    equity_curve = [1.0]
+    entry_index = None
+
+    def close_position(raw_exit, index):
+        nonlocal position, entry_fill, entry_index
+        if position == 0:
+            return
+        # Apply adverse slippage to the exit, then charge both entry and exit fees.
+        exit_fill = raw_exit * (1 - slip_rate) if position == 1 else raw_exit * (1 + slip_rate)
+        gross = position * (exit_fill - entry_fill) / entry_fill
+        entry_fee = fee_rate
+        exit_fee = fee_rate * (exit_fill / entry_fill)
+        net = gross - entry_fee - exit_fee
+        trade_returns.append(net)
+        equity_curve.append(equity_curve[-1] * (1 + net))
+        position = 0
+        entry_fill = 0.0
+        entry_index = None
+
+    # A crossover confirmed at candle close is executed at the NEXT candle open.
+    for i in range(22, len(valid_rows) - 1):
+        previous_diff = ema_fast[i - 1] - ema_slow[i - 1]
+        current_diff = ema_fast[i] - ema_slow[i]
+        desired = 1 if current_diff > 0 else -1
+        crossed = (previous_diff <= 0 < current_diff) or (previous_diff >= 0 > current_diff)
+        if crossed and desired != position:
+            next_open = valid_rows[i + 1]["open"]
+            if position != 0:
+                close_position(next_open, i + 1)
+            # Enter in the newly confirmed direction at the next candle open.
+            entry_fill = next_open * (1 + slip_rate) if desired == 1 else next_open * (1 - slip_rate)
+            position = desired
+            entry_index = i + 1
+
+    if position != 0:
+        close_position(valid_rows[-1]["close"], len(valid_rows) - 1)
+
+    wins = [value for value in trade_returns if value > 0]
+    losses = [value for value in trade_returns if value < 0]
+    peak = 1.0
+    max_drawdown = 0.0
+    for value in equity_curve[1:]:
+        peak = max(peak, value)
+        if peak > 0:
+            max_drawdown = max(max_drawdown, (peak - value) / peak)
+
+    gross_total = 1.0
+    net_total = 1.0
+    for value in trade_returns:
+        net_total *= (1 + value)
+    # Gross return is shown separately as the sum of directional price moves before costs.
+    gross_trade_returns = []
+    # Reconstruct gross returns from net returns plus modeled round-trip costs for transparent reporting.
+    # The net result remains the primary performance measure.
+    profit_factor = (sum(wins) / abs(sum(losses))) if losses and sum(losses) != 0 else (None if not wins else "infinite")
+
     return {
-        "asset": asset, "resolution": resolution, "candles": len(closes),
-        "closed_trades": len(trade_returns), "win_rate_pct": round(100*wins/len(trade_returns), 2) if trade_returns else None,
-        "gross_return_pct": round((equity-1)*100, 2),
-        "assumptions": "Long-only EMA 9/21 crossover. Excludes fees, slippage, funding, spread and execution delay.",
-        "warning": "Illustrative historical test only; past results do not predict future returns."
+        "asset": asset,
+        "resolution": resolution,
+        "candles": len(valid_rows),
+        "closed_trades": len(trade_returns),
+        "long_short": "Both long and short",
+        "long_short_strategy": "EMA 9/21 crossover; signal at candle close, execution at next candle open",
+        "win_rate_pct": round(100 * len(wins) / len(trade_returns), 2) if trade_returns else None,
+        "net_return_pct": round((net_total - 1) * 100, 4),
+        "max_drawdown_pct": round(max_drawdown * 100, 4),
+        "profit_factor": round(profit_factor, 4) if isinstance(profit_factor, (int, float)) else profit_factor,
+        "fee_assumption": {
+            "taker_fee_per_side_pct": taker_fee_pct,
+            "gst_on_fee_pct": gst_pct,
+            "effective_fee_per_side_pct": round(fee_rate * 100, 5)
+        },
+        "slippage_assumption_per_side_pct": slippage_pct,
+        "excluded_costs": ["funding", "spread beyond modeled slippage", "taxes/charges other than GST on trading fee"],
+        "mode": "PAPER_ONLY",
+        "warning": "Historical simulation only, not a validated strategy. Results depend on fee/slippage assumptions and do not predict future returns."
     }
 
 
@@ -394,7 +483,7 @@ def mcp_paper_signal(asset: str = "BTC", resolution: str = "1h") -> dict:
 
 @mcp_server.tool()
 def mcp_backtest(asset: str = "BTC", resolution: str = "1h", days: int = 180) -> dict:
-    """Run the illustrative historical EMA crossover backtest; fees/slippage are excluded."""
+    """Run a paper-only long/short EMA 9/21 backtest with configurable taker fee, GST and slippage assumptions."""
     return simple_backtest(asset, resolution, days)
 
 @app.get("/trading/status")
