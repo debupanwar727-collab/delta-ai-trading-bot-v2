@@ -63,10 +63,10 @@ app.add_middleware(
 @app.get("/", response_class=HTMLResponse)
 def home():
     try:
-        with open("dashboard.html", "r", encoding="utf-8") as dashboard:
+        with open("backtest_dashboard.html", "r", encoding="utf-8") as dashboard:
             return dashboard.read()
     except OSError:
-        return HTMLResponse("<h1>Dashboard file not found</h1>", status_code=500)
+        return HTMLResponse("<h1>Backtest dashboard file not found</h1>", status_code=500)
 
 @app.get("/health")
 def health():
