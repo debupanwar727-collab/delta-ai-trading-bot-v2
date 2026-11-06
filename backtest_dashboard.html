@@ -21,7 +21,8 @@ body{margin:0;background:#0a1020;color:#eef3ff;font:15px system-ui}header{paddin
 <p id="optBtStatus" class="muted">Historical option premium candles ki availability exchange par depend karti hai.</p>
 <div id="optBtResult"></div><details><summary>Options backtest JSON</summary><pre id="optRaw">No data loaded.</pre></details>
 </div>
-\n<div id="results"></div>
+
+<div id="results"></div>
 <div class="card"><b>Strategy details</b><p class="muted">EMA 9/21 crossover • signal candle close par • entry next candle open par • long + short trades • incomplete candle excluded.</p><p class="warn">Fee, GST aur slippage configurable assumptions hain. Funding aur kuch execution costs include nahi hain. Historical performance future profit ki guarantee nahi hai.</p></div>
 <div class="card"><b>Raw backtest data</b><details><summary>JSON result dekhein</summary><pre id="raw">No data loaded.</pre></details></div>
 </main><script>
@@ -72,4 +73,5 @@ async function runOptionBacktest(){
   $('optBtStatus').textContent='Options backtest response received · PAPER_ONLY';
  }catch(e){$('optBtStatus').textContent='Backtest error: '+e.message;}
 }
-\n</script></body></html>
+
+</script></body></html>
