@@ -407,5 +407,84 @@ def trading_status():
         "mcp_endpoint": "/mcp"
     }
 
+
+# ATR-based illustrative paper plan. This endpoint never places orders.
+@app.get("/paper/plan/{asset}")
+def paper_plan(asset: str):
+    asset = asset.upper()
+    if asset not in ("BTC", "ETH"):
+        raise HTTPException(status_code=400, detail="asset must be BTC or ETH")
+
+    signal_data = paper_signal(asset, "1h")
+    if signal_data.get("signal") not in ("BUY", "SELL"):
+        return {
+            "asset": asset,
+            "signal": signal_data.get("signal", "WAIT"),
+            "mode": "PAPER_ONLY",
+            "plan_status": "NO_TRADE",
+            "reason": "The current EMA/RSI filter did not produce a BUY or SELL signal.",
+            "signal_details": signal_data
+        }
+
+    candle_data = candles(asset, "1h", 30)
+    rows = candle_data.get("candles", [])
+    valid = [
+        row for row in rows
+        if all(number(row.get(key)) > 0 for key in ("high", "low", "close"))
+    ]
+    if len(valid) < 15:
+        return {
+            "asset": asset,
+            "signal": signal_data["signal"],
+            "mode": "PAPER_ONLY",
+            "plan_status": "INSUFFICIENT_DATA",
+            "candles_available": len(valid)
+        }
+
+    true_ranges = []
+    for index in range(1, len(valid)):
+        high = number(valid[index].get("high"))
+        low = number(valid[index].get("low"))
+        previous_close = number(valid[index - 1].get("close"))
+        true_ranges.append(max(
+            high - low,
+            abs(high - previous_close),
+            abs(low - previous_close)
+        ))
+    atr_value = sum(true_ranges[-14:]) / min(14, len(true_ranges[-14:]))
+    entry = number(valid[-1].get("close"))
+    if entry <= 0 or atr_value <= 0:
+        raise HTTPException(status_code=502, detail="Could not calculate a valid entry reference and ATR")
+
+    risk_distance = 1.5 * atr_value
+    reward_1 = 1.5 * risk_distance
+    reward_2 = 2.0 * risk_distance
+
+    if signal_data["signal"] == "BUY":
+        stop_loss = entry - risk_distance
+        target_1 = entry + reward_1
+        target_2 = entry + reward_2
+    else:
+        stop_loss = entry + risk_distance
+        target_1 = entry - reward_1
+        target_2 = entry - reward_2
+
+    return {
+        "asset": asset,
+        "timeframe": "1h",
+        "signal": signal_data["signal"],
+        "mode": "PAPER_ONLY",
+        "plan_status": "ILLUSTRATIVE_NOT_EXECUTED",
+        "entry_reference": round(entry, 2),
+        "atr_14": round(atr_value, 2),
+        "stop_loss": round(stop_loss, 2),
+        "target_1": round(target_1, 2),
+        "target_2": round(target_2, 2),
+        "risk_reward": "1:1.5 and 1:2",
+        "sizing": "Not calculated; account balance and maximum risk per trade are not configured.",
+        "signal_details": signal_data,
+        "warning": "Illustrative ATR-based levels only. No order is placed; signals and levels are not validated. Check fees, slippage and risk before any real trade."
+    }
+
 # Streamable HTTP MCP endpoint. All exposed tools are read-only.
 app.mount("/mcp", mcp_server.streamable_http_app())
