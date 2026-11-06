@@ -81,7 +81,7 @@ def market_tickers(asset: str = Query("BTC", pattern="^(BTC|ETH)$")):
 
 @app.get("/market/options")
 def options_chain(
-    asset: str = Query("BTC", pattern="^(BTC|ETH)$"),
+    asset: str = Query("BTC", pattern="^(BTC|ETH|XAUT)$"),
     expiry_date: Optional[str] = Query(None, description="DD-MM-YYYY; omit to request current/future listed expiries")
 ):
     params = {
@@ -131,7 +131,7 @@ def number(value: Any) -> float:
 
 @app.get("/analytics/options")
 def options_analytics(
-    asset: str = Query("BTC", pattern="^(BTC|ETH)$"),
+    asset: str = Query("BTC", pattern="^(BTC|ETH|XAUT)$"),
     expiry_date: Optional[str] = None
 ):
     rows = options_chain(asset, expiry_date)
@@ -169,7 +169,93 @@ def options_analytics(
         "note": "Only available exchange OI/strike fields are used. Missing fields are not fabricated; Greeks/IV remain in raw chain response."
     }
 
-@app.get("/signals/{asset}")
+
+@app.get("/backtest/options/{asset}")
+def options_contract_backtest(
+    asset: str,
+    symbol: str = Query(..., min_length=5, max_length=80),
+    resolution: str = Query("1h", pattern="^(1m|3m|5m|15m|30m|1h|2h|4h|6h|1d|1w)$"),
+    days: int = Query(30, ge=1, le=180),
+    taker_fee_pct: float = Query(0.05, ge=0, le=1),
+    gst_pct: float = Query(18.0, ge=0, le=100),
+    slippage_pct: float = Query(0.02, ge=0, le=1)
+):
+    """Backtest a selected currently listed option contract using its own historical candles; PAPER_ONLY."""
+    asset = asset.upper()
+    if asset not in ("BTC", "ETH", "XAUT"):
+        raise HTTPException(status_code=400, detail="asset must be BTC, ETH or XAUT")
+    chain = options_chain(asset)
+    if not isinstance(chain, list):
+        chain = chain.get("result", []) if isinstance(chain, dict) else []
+    allowed = {str(row.get("symbol", "")) for row in chain if isinstance(row, dict)}
+    if symbol not in allowed:
+        raise HTTPException(status_code=400, detail="Choose a symbol from the current live option chain.")
+    end_ts = int(time.time())
+    start_ts = end_ts - days * 86400
+    intervals = {"1m":60,"3m":180,"5m":300,"15m":900,"30m":1800,"1h":3600,"2h":7200,"4h":14400,"6h":21600,"1d":86400,"1w":604800}
+    interval = intervals[resolution]
+    raw = []
+    cursor = start_ts
+    while cursor < end_ts:
+        chunk_end = min(cursor + interval * 1900, end_ts)
+        batch = delta_get("/v2/history/candles", {"resolution": resolution, "symbol": symbol, "start": cursor, "end": chunk_end})
+        if isinstance(batch, list): raw.extend(batch)
+        cursor = chunk_end
+    unique = {x.get("time"): x for x in raw if isinstance(x, dict) and x.get("time") is not None}
+    rows = sorted(unique.values(), key=lambda x: x.get("time", 0))
+    rows = [{"time": int(number(x.get("time"))), "open": number(x.get("open")), "close": number(x.get("close"))}
+            for x in rows if number(x.get("time")) + interval <= end_ts and number(x.get("open")) > 0 and number(x.get("close")) > 0]
+    if len(rows) < 30:
+        return {"asset": asset, "symbol": symbol, "resolution": resolution, "candles": len(rows),
+                "closed_trades": 0, "status": "INSUFFICIENT_HISTORICAL_OPTION_CANDLES",
+                "message": "Exchange ne is contract ke liye paryapt historical candles nahi diye. Result fabricate nahi kiya gaya.",
+                "mode": "PAPER_ONLY"}
+    closes = [x["close"] for x in rows]
+    fast, slow = [closes[0]], [closes[0]]
+    for price in closes[1:]:
+        fast.append((2/10)*price + (8/10)*fast[-1])
+        slow.append((2/22)*price + (20/22)*slow[-1])
+    fee = (taker_fee_pct/100) * (1 + gst_pct/100)
+    slip = slippage_pct/100
+    position, entry, returns, equity = 0, 0.0, [], [1.0]
+    for i in range(22, len(rows)-1):
+        previous = fast[i-1] - slow[i-1]
+        current = fast[i] - slow[i]
+        crossed = (previous <= 0 < current) or (previous >= 0 > current)
+        desired = 1 if current > 0 else -1
+        if crossed and desired != position:
+            price = rows[i+1]["open"]
+            if position:
+                exit_fill = price*(1-slip) if position == 1 else price*(1+slip)
+                gross = position*(exit_fill-entry)/entry
+                net = gross-fee-fee*(exit_fill/entry)
+                returns.append(net); equity.append(equity[-1]*(1+net))
+            entry = price*(1+slip) if desired == 1 else price*(1-slip)
+            position = desired
+    if position:
+        price = rows[-1]["close"]
+        exit_fill = price*(1-slip) if position == 1 else price*(1+slip)
+        gross = position*(exit_fill-entry)/entry
+        net = gross-fee-fee*(exit_fill/entry)
+        returns.append(net); equity.append(equity[-1]*(1+net))
+    wins = [x for x in returns if x > 0]
+    losses = [x for x in returns if x < 0]
+    peak, drawdown = 1.0, 0.0
+    for value in equity[1:]:
+        peak = max(peak, value)
+        drawdown = max(drawdown, (peak-value)/peak if peak else 0)
+    total = 1.0
+    for value in returns: total *= 1+value
+    return {"asset": asset, "symbol": symbol, "resolution": resolution, "candles": len(rows),
+            "closed_trades": len(returns), "win_rate_pct": round(100*len(wins)/len(returns),2) if returns else None,
+            "net_return_pct": round((total-1)*100,4), "max_drawdown_pct": round(drawdown*100,4),
+            "profit_factor": round(sum(wins)/abs(sum(losses)),4) if losses else ("infinite" if wins else None),
+            "strategy": "EMA 9/21 on option premium; signal at close, entry next candle open",
+            "fee_assumption": {"taker_fee_per_side_pct": taker_fee_pct, "gst_on_fee_pct": gst_pct, "slippage_per_side_pct": slippage_pct},
+            "mode": "PAPER_ONLY",
+            "warning": "Selected option premium candles ka simulation; historical option-chain/Greeks replay nahi. Assumed costs apply. Future profit guaranteed nahi."}
+
+\n@app.get("/signals/{asset}")
 def paper_signal(asset: str, resolution: str = "1h"):
     asset = asset.upper()
     if asset not in ("BTC", "ETH"):
