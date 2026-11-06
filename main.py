@@ -224,3 +224,48 @@ def simple_backtest(
         "assumptions": "Long-only EMA 9/21 crossover. Excludes fees, slippage, funding, spread and execution delay.",
         "warning": "Illustrative historical test only; past results do not predict future returns."
     }
+
+
+# Read-only MCP tools for compatible AI clients. No order-placement tools are exposed.
+from mcp.server.fastmcp import FastMCP
+
+mcp_server = FastMCP("Delta AI Trading Bot V2")
+
+@mcp_server.tool()
+def mcp_market_tickers(asset: str = "BTC") -> dict:
+    """Read BTC or ETH perpetual/futures market tickers from Delta Exchange."""
+    asset = asset.upper()
+    if asset not in ("BTC", "ETH"):
+        raise ValueError("asset must be BTC or ETH")
+    return {"asset": asset, "data": market_tickers(asset)}
+
+@mcp_server.tool()
+def mcp_options_analytics(asset: str = "BTC") -> dict:
+    """Read available option-chain open interest, PCR and estimated max pain."""
+    asset = asset.upper()
+    if asset not in ("BTC", "ETH"):
+        raise ValueError("asset must be BTC or ETH")
+    return options_analytics(asset)
+
+@mcp_server.tool()
+def mcp_paper_signal(asset: str = "BTC", resolution: str = "1h") -> dict:
+    """Get an educational paper-only EMA/RSI signal; this never places an order."""
+    return paper_signal(asset, resolution)
+
+@mcp_server.tool()
+def mcp_backtest(asset: str = "BTC", resolution: str = "1h", days: int = 180) -> dict:
+    """Run the illustrative historical EMA crossover backtest; fees/slippage are excluded."""
+    return simple_backtest(asset, resolution, days)
+
+@app.get("/trading/status")
+def trading_status():
+    return {
+        "mode": "PAPER_ONLY",
+        "live_trading_enabled": False,
+        "order_execution_available": False,
+        "reason": "Live order placement is intentionally disabled until API credentials, product, position sizing and hard risk limits are configured and verified.",
+        "mcp_endpoint": "/mcp"
+    }
+
+# Streamable HTTP MCP endpoint. All exposed tools are read-only.
+app.mount("/mcp", mcp_server.streamable_http_app())
