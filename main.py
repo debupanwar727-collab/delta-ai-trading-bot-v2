@@ -240,11 +240,13 @@ def simple_backtest(
     position = 0
     entry_fill = 0.0
     trade_returns = []
+    gross_trade_returns = []
     equity_curve = [1.0]
-    entry_index = None
+    long_trades = 0
+    short_trades = 0
 
     def close_position(raw_exit, index):
-        nonlocal position, entry_fill, entry_index
+        nonlocal position, entry_fill
         if position == 0:
             return
         # Apply adverse slippage to the exit, then charge both entry and exit fees.
@@ -253,11 +255,11 @@ def simple_backtest(
         entry_fee = fee_rate
         exit_fee = fee_rate * (exit_fill / entry_fill)
         net = gross - entry_fee - exit_fee
+        gross_trade_returns.append(gross)
         trade_returns.append(net)
         equity_curve.append(equity_curve[-1] * (1 + net))
         position = 0
         entry_fill = 0.0
-        entry_index = None
 
     # A crossover confirmed at candle close is executed at the NEXT candle open.
     for i in range(22, len(valid_rows) - 1):
@@ -272,7 +274,10 @@ def simple_backtest(
             # Enter in the newly confirmed direction at the next candle open.
             entry_fill = next_open * (1 + slip_rate) if desired == 1 else next_open * (1 - slip_rate)
             position = desired
-            entry_index = i + 1
+            if desired == 1:
+                long_trades += 1
+            else:
+                short_trades += 1
 
     if position != 0:
         close_position(valid_rows[-1]["close"], len(valid_rows) - 1)
@@ -288,12 +293,10 @@ def simple_backtest(
 
     gross_total = 1.0
     net_total = 1.0
+    for value in gross_trade_returns:
+        gross_total *= (1 + value)
     for value in trade_returns:
         net_total *= (1 + value)
-    # Gross return is shown separately as the sum of directional price moves before costs.
-    gross_trade_returns = []
-    # Reconstruct gross returns from net returns plus modeled round-trip costs for transparent reporting.
-    # The net result remains the primary performance measure.
     profit_factor = (sum(wins) / abs(sum(losses))) if losses and sum(losses) != 0 else (None if not wins else "infinite")
 
     return {
@@ -301,9 +304,12 @@ def simple_backtest(
         "resolution": resolution,
         "candles": len(valid_rows),
         "closed_trades": len(trade_returns),
+        "long_trades": long_trades,
+        "short_trades": short_trades,
         "long_short": "Both long and short",
         "long_short_strategy": "EMA 9/21 crossover; signal at candle close, execution at next candle open",
         "win_rate_pct": round(100 * len(wins) / len(trade_returns), 2) if trade_returns else None,
+        "gross_return_pct": round((gross_total - 1) * 100, 4),
         "net_return_pct": round((net_total - 1) * 100, 4),
         "max_drawdown_pct": round(max_drawdown * 100, 4),
         "profit_factor": round(profit_factor, 4) if isinstance(profit_factor, (int, float)) else profit_factor,
