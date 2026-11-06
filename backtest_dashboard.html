@@ -2,7 +2,26 @@
 body{margin:0;background:#0a1020;color:#eef3ff;font:15px system-ui}header{padding:20px;background:#121d33;border-bottom:1px solid #2b3b59}main{max-width:1050px;margin:auto;padding:16px}.controls,.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}.card{background:#17233b;border:1px solid #30415f;border-radius:13px;padding:15px;margin:10px 0}.metric{font-size:25px;font-weight:750;margin-top:8px}.muted,small{color:#a9b8d4}button,select{background:#29466f;color:white;border:1px solid #49658e;padding:11px;border-radius:8px;width:100%}.positive{color:#37d6a4}.negative{color:#ff788a}.warn{color:#ffcf80;font-size:12px;line-height:1.5}table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:10px 7px;border-bottom:1px solid #30415f;text-align:left}pre{white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto}h1{font-size:21px;margin:0 0 5px}
 </style></head><body><header><h1>📊 Backtest Data Dashboard</h1><small>BTC & ETH • EMA 9/21 • Historical performance • PAPER_ONLY</small></header><main>
 <div class="card"><div class="controls"><label>Asset<select id="asset"><option value="BTC">BTC</option><option value="ETH">ETH</option><option value="BOTH">BTC + ETH compare</option></select></label><label>Timeframe<select id="resolution"><option>1h</option><option>15m</option><option>5m</option><option>4h</option><option>1d</option></select></label><label>History<select id="days"><option value="30">30 days</option><option value="90">90 days</option><option value="180" selected>180 days</option></select></label><label>&nbsp;<button onclick="run()">Run backtest</button></label></div><p id="status" class="muted">Backtest run karne ke liye button dabayein.</p></div>
-<div id="results"></div>
+
+<div class="card"><h2>Live Options Analytics</h2><div class="controls">
+<label>Underlying<select id="optAsset"><option>BTC</option><option>ETH</option><option value="XAUT">Gold (XAUT)</option></select></label>
+<label>Expiry (optional)<input id="optExpiry" placeholder="DD-MM-YYYY"></label>
+<label>&nbsp;<button onclick="loadOptions()">Load live options</button></label></div>
+<p id="optStatus" class="muted">BTC / ETH / Gold XAUT option chain load karein.</p>
+<div id="optSummary" class="grid"></div>
+<div style="overflow:auto"><table id="optTable"><thead><tr><th>Symbol</th><th>Type</th><th>Strike</th><th>OI</th><th>Volume</th><th>IV</th><th>Delta</th><th>Gamma</th><th>Theta</th><th>Vega</th></tr></thead><tbody></tbody></table></div>
+<p class="warn">Exchange jis field ka data dega wahi dikhaya jayega. Missing IV/Greeks/OI ko blank rakha jayega.</p>
+</div>
+<div class="card"><h2>Historical Options Backtest</h2>
+<p class="muted">Pehle live option chain load karein, phir ek listed contract select karein.</p>
+<div class="controls"><label>Option contract<select id="optSymbol"><option value="">Load option chain first</option></select></label>
+<label>Timeframe<select id="optResolution"><option>1h</option><option>15m</option><option>5m</option><option>4h</option><option>1d</option></select></label>
+<label>History<select id="optDays"><option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option><option value="180">180 days</option></select></label>
+<label>&nbsp;<button onclick="runOptionBacktest()">Run options backtest</button></label></div>
+<p id="optBtStatus" class="muted">Historical option premium candles ki availability exchange par depend karti hai.</p>
+<div id="optBtResult"></div><details><summary>Options backtest JSON</summary><pre id="optRaw">No data loaded.</pre></details>
+</div>
+\n<div id="results"></div>
 <div class="card"><b>Strategy details</b><p class="muted">EMA 9/21 crossover • signal candle close par • entry next candle open par • long + short trades • incomplete candle excluded.</p><p class="warn">Fee, GST aur slippage configurable assumptions hain. Funding aur kuch execution costs include nahi hain. Historical performance future profit ki guarantee nahi hai.</p></div>
 <div class="card"><b>Raw backtest data</b><details><summary>JSON result dekhein</summary><pre id="raw">No data loaded.</pre></details></div>
 </main><script>
@@ -12,4 +31,45 @@ async function one(a){let url='/backtest/'+a+'?resolution='+$('resolution').valu
 function panel(d){let net=Number(d.net_return_pct),gross=Number(d.gross_return_pct);return '<section class="card"><h2>'+d.asset+' <small>'+d.resolution+' • '+d.candles+' candles</small></h2><div class="grid">'+metric('Net return',fmt(d.net_return_pct)+'%',net>=0)+metric('Win rate',fmt(d.win_rate_pct)+'%')+metric('Closed trades',fmt(d.closed_trades))+metric('Max drawdown',fmt(d.max_drawdown_pct)+'%',false)+metric('Gross return',fmt(d.gross_return_pct)+'%',gross>=0)+metric('Profit factor',fmt(d.profit_factor))+metric('Long trades',fmt(d.long_trades))+metric('Short trades',fmt(d.short_trades))+'</div><p class="muted">'+(d.long_short_strategy||'')+'</p><table><tr><th>Fee per side</th><td>'+fmt(d.fee_assumption?.taker_fee_per_side_pct)+'%</td></tr><tr><th>GST on fee</th><td>'+fmt(d.fee_assumption?.gst_on_fee_pct)+'%</td></tr><tr><th>Slippage per side</th><td>'+fmt(d.slippage_assumption_per_side_pct)+'%</td></tr></table></section>'}
 function metric(t,v,pos){return '<div class="card"><small>'+t+'</small><div class="metric '+(pos===undefined?'':pos?'positive':'negative')+'">'+v+'</div></div>'}
 async function run(){$('status').textContent='Exchange candle data fetch ho raha hai…';$('results').innerHTML='';cache=[];let choice=$('asset').value,assets=choice==='BOTH'?['BTC','ETH']:[choice];try{for(const a of assets){$('status').textContent=a+' backtest chal raha hai…';cache.push(await one(a))}$('results').innerHTML=cache.map(panel).join('');$('raw').textContent=JSON.stringify(cache,null,2);$('status').textContent='Backtest complete • '+new Date().toLocaleString()}catch(e){$('status').textContent='Error: '+e.message;$('results').innerHTML='<section class="card warn">Data load nahi hua. Thodi der baad dobara try karein.</section>'}}
-</script></body></html>
+
+async function loadOptions(){
+ const a=$('optAsset').value, expiry=$('optExpiry').value.trim();
+ $('optStatus').textContent='Live option chain fetch ho rahi hai…';
+ $('optTable').querySelector('tbody').innerHTML='';$('optSummary').innerHTML='';
+ try{
+  const url='/market/options?asset='+encodeURIComponent(a)+(expiry?'&expiry_date='+encodeURIComponent(expiry):'');
+  const r=await fetch(url), data=await r.json();
+  if(!r.ok)throw Error(data.detail||r.status);
+  const rows=Array.isArray(data)?data:(data.result||[]);
+  if(!rows.length){$('optStatus').textContent=a+' ke liye exchange ne koi live option contract nahi diya. XAUT unsupported/empty ho sakta hai; fake data nahi dikhaya jayega.';$('optSymbol').innerHTML='<option value="">No contracts returned</option>';return;}
+  const calls=rows.filter(x=>String(x.contract_type||'').toLowerCase().includes('call'));
+  const puts=rows.filter(x=>String(x.contract_type||'').toLowerCase().includes('put'));
+  const oi=x=>Number(x.open_interest||x.oi||0);
+  const coi=calls.reduce((s,x)=>s+oi(x),0), poi=puts.reduce((s,x)=>s+oi(x),0);
+  const pcr=coi?poi/coi:null;
+  $('optSummary').innerHTML=metric('Contracts',rows.length)+metric('Calls',calls.length)+metric('Puts',puts.length)+metric('Call OI',fmt(coi))+metric('Put OI',fmt(poi))+metric('PCR',pcr==null?'—':pcr.toFixed(3));
+  $('optSymbol').innerHTML='<option value="">Select contract</option>'+rows.filter(x=>x.symbol).map(x=>'<option value="'+String(x.symbol).replace(/"/g,'&quot;')+'">'+x.symbol+'</option>').join('');
+  $('optTable').querySelector('tbody').innerHTML=rows.slice(0,100).map(x=>{
+   const g=x.greeks||{},q=x.quotes||{};
+   return '<tr><td>'+ (x.symbol||'—')+'</td><td>'+(x.contract_type||'—')+'</td><td>'+(x.strike_price||'—')+'</td><td>'+(x.open_interest||x.oi||'—')+'</td><td>'+(x.volume??'—')+'</td><td>'+(x.mark_iv||x.iv||q.ask_iv||'—')+'</td><td>'+(g.delta??x.delta??'—')+'</td><td>'+(g.gamma??x.gamma??'—')+'</td><td>'+(g.theta??x.theta??'—')+'</td><td>'+(g.vega??x.vega??'—')+'</td></tr>';
+  }).join('');
+  $('optStatus').textContent='Live chain loaded: '+rows.length+' contracts · '+new Date().toLocaleTimeString();
+ }catch(e){$('optStatus').textContent='Options data error: '+e.message;}
+}
+async function runOptionBacktest(){
+ const a=$('optAsset').value,s=$('optSymbol').value;
+ if(!s){$('optBtStatus').textContent='Pehle live chain se contract select karein.';return;}
+ $('optBtStatus').textContent='Historical option candles fetch/backtest ho raha hai…';
+ try{
+  const url='/backtest/options/'+a+'?symbol='+encodeURIComponent(s)+'&resolution='+$('optResolution').value+'&days='+$('optDays').value;
+  const r=await fetch(url),d=await r.json();$('optRaw').textContent=JSON.stringify(d,null,2);
+  if(!r.ok)throw Error(d.detail||r.status);
+  if(d.status==='INSUFFICIENT_HISTORICAL_OPTION_CANDLES'){
+   $('optBtResult').innerHTML='<p class="warn">'+d.message+'</p>';
+  }else{
+   $('optBtResult').innerHTML='<div class="grid">'+metric('Net return',fmt(d.net_return_pct)+'%',Number(d.net_return_pct)>=0)+metric('Win rate',fmt(d.win_rate_pct)+'%')+metric('Closed trades',fmt(d.closed_trades))+metric('Max drawdown',fmt(d.max_drawdown_pct)+'%',false)+metric('Profit factor',fmt(d.profit_factor))+'</div><p class="muted">'+d.strategy+'</p><p class="warn">'+d.warning+'</p>';
+  }
+  $('optBtStatus').textContent='Options backtest response received · PAPER_ONLY';
+ }catch(e){$('optBtStatus').textContent='Backtest error: '+e.message;}
+}
+\n</script></body></html>
