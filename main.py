@@ -425,6 +425,92 @@ def simple_backtest(
 
 
 
+
+# Timeframe-specific entry/stop/target analysis. Read-only; no orders are placed.
+@app.get("/trade/setup/{asset}")
+def timeframe_trade_setup(
+    asset: str,
+    resolution: str = Query("5m", pattern="^(1m|3m|5m|15m|30m|1h|2h|4h|6h|1d)$"),
+    target_points: float = Query(300, gt=0, le=100000)
+):
+    asset = asset.upper()
+    if asset not in ("BTC", "ETH", "XAUT"):
+        raise HTTPException(status_code=400, detail="asset must be BTC, ETH or XAUT")
+    days_by_tf = {"1m": 3, "3m": 7, "5m": 30, "15m": 60, "30m": 90,
+                  "1h": 180, "2h": 180, "4h": 180, "6h": 180, "1d": 180}
+    seconds_by_tf = {"1m":60, "3m":180, "5m":300, "15m":900, "30m":1800,
+                     "1h":3600, "2h":7200, "4h":14400, "6h":21600, "1d":86400}
+    raw = candles(asset, resolution, days_by_tf[resolution]).get("candles", [])
+    now = int(time.time())
+    interval = seconds_by_tf[resolution]
+    rows = [x for x in raw if number(x.get("time")) > 0
+            and number(x.get("time")) + interval <= now
+            and all(number(x.get(k)) > 0 for k in ("open","high","low","close"))]
+    rows.sort(key=lambda x: number(x.get("time")))
+    if len(rows) < 55:
+        return {"asset":asset,"timeframe":resolution,"signal":"WAIT",
+                "status":"INSUFFICIENT_CLOSED_CANDLES","candles":len(rows),
+                "mode":"PAPER_ONLY","reason":"Selected timeframe par 55 fully closed candles available nahi hain."}
+    closes=[number(x["close"]) for x in rows]
+    highs=[number(x["high"]) for x in rows]
+    lows=[number(x["low"]) for x in rows]
+    e9=_ema_series(closes,9)[-1]
+    e21=_ema_series(closes,21)[-1]
+    e50=_ema_series(closes,50)[-1]
+    rsi=_rsi_series(closes,14)[-1]
+    tr=[]
+    for i in range(1,len(rows)):
+        tr.append(max(highs[i]-lows[i],abs(highs[i]-closes[i-1]),abs(lows[i]-closes[i-1])))
+    atr=sum(tr[-14:])/14
+    last=rows[-1]
+    entry=closes[-1]
+    prior_high=max(highs[-6:-1])
+    prior_low=min(lows[-6:-1])
+    direction="WAIT"
+    reasons=[]
+    if e9>e21 and entry>e50 and rsi>=52 and rsi<=68:
+        direction="BUY"
+        reasons=["EMA 9, EMA 21 se upar hai: short-term momentum bullish.",
+                 "Close EMA 50 ke upar hai: selected timeframe ka trend bullish.",
+                 "RSI 52–68 hai: momentum positive hai, extreme overbought zone nahi."]
+    elif e9<e21 and entry<e50 and rsi>=32 and rsi<=48:
+        direction="SELL"
+        reasons=["EMA 9, EMA 21 se neeche hai: short-term momentum bearish.",
+                 "Close EMA 50 ke neeche hai: selected timeframe ka trend bearish.",
+                 "RSI 32–48 hai: momentum negative hai, extreme oversold zone nahi."]
+    else:
+        reasons=["EMA 9/21, EMA 50 aur RSI ek hi direction confirm nahi kar rahe; chase entry se bachein."]
+    result={"asset":asset,"timeframe":resolution,"signal":direction,"mode":"PAPER_ONLY",
+            "last_closed_candle_time":int(number(last.get("time"))),
+            "last_closed_price":round(entry,4),"ema9":round(e9,4),"ema21":round(e21,4),
+            "ema50":round(e50,4),"rsi14":round(rsi,2),"atr14":round(atr,4),
+            "recent_swing_high_5":round(prior_high,4),"recent_swing_low_5":round(prior_low,4),
+            "logic":reasons,"target_points_requested":target_points}
+    if direction=="WAIT":
+        result.update({"status":"NO_TRADE","entry":None,"stop_loss":None,
+                       "target_1":None,"target_2":None,
+                       "why_no_trade":"Trend + momentum confirmation incomplete."})
+        return result
+    risk=max(1.2*atr, entry-prior_low if direction=="BUY" else prior_high-entry)
+    if risk<=0:
+        result.update({"signal":"WAIT","status":"INVALID_RISK_LEVELS",
+                       "why_no_trade":"Valid swing/ATR stop distance calculate nahi hua."})
+        return result
+    sl=entry-risk if direction=="BUY" else entry+risk
+    t1=entry+target_points if direction=="BUY" else entry-target_points
+    t2=entry+2*target_points if direction=="BUY" else entry-2*target_points
+    rr=target_points/risk
+    result.update({"status":"SETUP_READY" if rr>=1.5 else "WAIT_LOW_RISK_REWARD",
+        "entry_type":"Next candle confirmation; current close is reference, not guaranteed fill",
+        "entry":round(entry,4),"stop_loss":round(sl,4),
+        "target_1":round(t1,4),"target_2":round(t2,4),
+        "risk_points":round(risk,4),"reward_risk_to_target_1":round(rr,2),
+        "why_trade":("Trend and momentum agree on the selected timeframe." if rr>=1.5 else
+                     "Direction is aligned, but the requested target does not provide 1:1.5 reward/risk; wait."),
+        "trailing_stop_rule":"After Target 1, trail by 1 ATR from the best price reached; illustrative rule only.",
+        "warning":"Closed-candle analysis only. Entry is a reference, not a live executable order. Fees/slippage may change levels. No orders are placed; not validated or guaranteed."})
+    return result
+
 # Public real-time market feed. This relays Delta's public WebSocket only.
 DELTA_PUBLIC_WS = "wss://public-socket.india.delta.exchange"
 
