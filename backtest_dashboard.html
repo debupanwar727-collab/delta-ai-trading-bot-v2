@@ -1,107 +1,24 @@
-<!doctype html><html lang="hi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Delta AI Combined Dashboard</title><style>
-body{margin:0;background:#0a1020;color:#eef3ff;font:15px system-ui}header{padding:20px;background:#121d33;border-bottom:1px solid #2b3b59}main{max-width:1050px;margin:auto;padding:16px}.controls,.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}.card{background:#17233b;border:1px solid #30415f;border-radius:13px;padding:15px;margin:10px 0}.metric{font-size:25px;font-weight:750;margin-top:8px}.muted,small{color:#a9b8d4}button,select{background:#29466f;color:white;border:1px solid #49658e;padding:11px;border-radius:8px;width:100%}.positive{color:#37d6a4}.negative{color:#ff788a}.warn{color:#ffcf80;font-size:12px;line-height:1.5}table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:10px 7px;border-bottom:1px solid #30415f;text-align:left}pre{white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto}h1{font-size:21px;margin:0 0 5px}
-</style></head><body><header><h1>📊 Delta AI Combined Dashboard</h1><small>BTC • ETH • Gold XAUT | Live market + Options analytics + 6-month backtest | PAPER_ONLY</small></header><main>
-<div class="card"><h2>Market Overview</h2><p class="muted">BTC/ETH live ticker; Gold ke liye latest available 1h candle close. Auto-refresh every 60 seconds.</p><div id="marketOverview" class="grid"><p class="muted">Loading market data…</p></div></div>
-<div class="card"><h2>Combined Options Analytics</h2><div id="combinedOptions" class="grid"><p class="muted">Loading BTC, ETH and Gold options analytics…</p></div></div>
-<div class="card"><div class="controls"><label>Asset<select id="asset"><option value="BTC">BTC</option><option value="ETH">ETH</option><option value="XAUT">Gold (XAUT)</option><option value="BOTH">BTC + ETH compare</option><option value="ALL">BTC + ETH + Gold compare</option></select></label><label>Timeframe<select id="resolution"><option>1h</option><option>15m</option><option>5m</option><option>4h</option><option>1d</option></select></label><label>History<select id="days"><option value="30">30 days</option><option value="90">90 days</option><option value="180" selected>180 days</option></select></label><label>&nbsp;<button onclick="run()">Run backtest</button></label></div><p id="status" class="muted">Backtest run karne ke liye button dabayein.</p></div>
+<!doctype html><html lang="hi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Delta AI Dashboard</title><style>
+body{margin:0;background:#0b1020;color:#f3f6ff;font:15px system-ui}header{padding:20px;background:#121c31}main{max-width:1000px;margin:auto;padding:16px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}.card{background:#17233b;border:1px solid #30415f;border-radius:14px;padding:16px;margin-bottom:12px}.muted,small{color:#aab8d3}.big{font-size:26px;font-weight:bold;margin:8px 0}.green{color:#39d5a6}.red{color:#ff788a}button,select{background:#28436c;color:white;border:0;padding:11px;border-radius:8px;margin:5px}pre{white-space:pre-wrap;word-break:break-word}.warn{color:#ffce80;font-size:12px}
+</style></head><body><header><h2>⚡ Delta AI Trading Dashboard <small id="status">Connecting…</small></h2><small>BTC / ETH • Live public data • PAPER_ONLY</small></header><main>
+<div><button onclick="refreshAll()">Refresh</button><button onclick="loadBacktest()">Run backtest</button><select id="asset" onchange="refreshAll()"><option>BTC</option><option>ETH</option><option>XAUT</option></select><select id="resolution"><option>1h</option><option>15m</option><option>5m</option><option>4h</option><option>1d</option></select></div>
+<div class="grid"><section class="card"><small>Asset</small><div class="big" id="assetName">BTC</div></section><section class="card"><small>Market price</small><div class="big" id="price">Loading…</div><small>Delta public ticker</small></section><section class="card"><small>Paper signal</small><div class="big" id="signal">Loading…</div><small>EMA 9/21 + RSI approx</small></section><section class="card"><small>Options PCR (OI)</small><div class="big" id="pcr">Loading…</div><small id="pain">Max pain: —</small></section></div>
+<div class="grid"><section class="card"><b>Signal details</b><div id="signalDetails">Loading…</div></section><section class="card"><b>Options overview</b><div id="optionsDetails">Loading…</div></section></div>
 
-<div class="card"><h2>Live Options Analytics</h2><div class="controls">
-<label>Underlying<select id="optAsset"><option>BTC</option><option>ETH</option><option value="XAUT">Gold (XAUT)</option></select></label>
-<label>Expiry (optional)<input id="optExpiry" placeholder="DD-MM-YYYY"></label>
-<label>&nbsp;<button onclick="loadOptions()">Load live options</button></label></div>
-<p id="optStatus" class="muted">BTC / ETH / Gold XAUT option chain load karein.</p>
-<div id="optSummary" class="grid"></div>
-<div style="overflow:auto"><table id="optTable"><thead><tr><th>Symbol</th><th>Type</th><th>Strike</th><th>OI</th><th>Volume</th><th>IV</th><th>Delta</th><th>Gamma</th><th>Theta</th><th>Vega</th></tr></thead><tbody></tbody></table></div>
-<p class="warn">Exchange jis field ka data dega wahi dikhaya jayega. Missing IV/Greeks/OI ko blank rakha jayega.</p>
-</div>
-<div class="card"><h2>Historical Options Backtest</h2>
-<p class="muted">Pehle live option chain load karein, phir ek listed contract select karein.</p>
-<div class="controls"><label>Option contract<select id="optSymbol"><option value="">Load option chain first</option></select></label>
-<label>Timeframe<select id="optResolution"><option>1h</option><option>15m</option><option>5m</option><option>4h</option><option>1d</option></select></label>
-<label>History<select id="optDays"><option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option><option value="180">180 days</option></select></label>
-<label>&nbsp;<button onclick="runOptionBacktest()">Run options backtest</button></label></div>
-<p id="optBtStatus" class="muted">Historical option premium candles ki availability exchange par depend karti hai.</p>
-<div id="optBtResult"></div><details><summary>Options backtest JSON</summary><pre id="optRaw">No data loaded.</pre></details>
-</div>
+<section class="card"><b>All Assets Strategy Dashboard — PAPER_ONLY</b><div class="muted">BTC, ETH aur XAUT ki 9 strategies ka signal aur 180-day performance comparison.</div><button onclick="loadAllAssetsStrategies()">Run BTC + ETH + XAUT</button><div id="allAssetsStatus">Loading strategy comparison…</div><div id="allAssetsResults" class="grid"></div></section>
+<section class="card"><b>Selected Asset — All 9 Strategies</b><div class="muted">Upar selector se asset chunein; yahan uski detailed strategy cards dikhenge.</div><button onclick="loadStrategies()">Run selected asset</button><div id="strategyStatus">Select BTC/ETH/XAUT and run analysis.</div><div id="strategyResults" class="grid"></div><div class="warn">Backtests are illustrative in-sample tests without fees/slippage. Historical candles are not live ticks. PCR strategy uses current PCR as historical bias, not historical option-chain replay.</div></section>
 
-<div id="results"></div>
-<div class="card"><b>Strategy details</b><p class="muted">EMA 9/21 crossover • signal candle close par • entry next candle open par • long + short trades • incomplete candle excluded.</p><p class="warn">Fee, GST aur slippage configurable assumptions hain. Funding aur kuch execution costs include nahi hain. Historical performance future profit ki guarantee nahi hai.</p></div>
-<div class="card"><b>Raw backtest data</b><details><summary>JSON result dekhein</summary><pre id="raw">No data loaded.</pre></details></div>
+<section class="card"><b>Historical backtest (180 days)</b><div id="backtest" class="muted">Run backtest button dabayein.</div></section>
+<section class="card"><b>API status</b><div id="apiStatus">Checking…</div><p><a href="/docs" style="color:#8dbaff">API documentation</a></p></section>
+<section class="card warn">⚠️ PAPER_ONLY — yeh dashboard sirf data aur testing dikhata hai. Koi real order place nahi hota. Backtest future profit ki guarantee nahi hai.</section>
 </main><script>
-const $=id=>document.getElementById(id);let cache=[];
-const fmt=v=>v==null?'—':(typeof v==='number'?v.toFixed(2):v);
-
-async function getJson(url){const r=await fetch(url);const d=await r.json();if(!r.ok)throw Error(d.detail||r.status);return d;}
-function val(o,keys){for(const k of keys){if(o&&o[k]!==undefined&&o[k]!==null&&o[k]!=='')return o[k];}return null;}
-async function loadOverview(){
- const box=$('marketOverview'),opt=$('combinedOptions');
- box.innerHTML='';opt.innerHTML='';
- for(const a of ['BTC','ETH','XAUT']){
-  try{
-   if(a==='XAUT'){
-    const d=await getJson('/market/candles?asset=XAUT&resolution=1h&days=2');
-    const rows=d.candles||[];const last=rows[rows.length-1]||{};
-    box.innerHTML+=metric('Gold XAUT · last 1h close',fmt(last.close),undefined);
-   }else{
-    const d=await getJson('/market/tickers?asset='+a);
-    const rows=Array.isArray(d)?d:(d.result||[]);
-    const row=rows.find(x=>String(x.symbol||'').startsWith(a))||rows[0]||{};
-    const price=val(row,['mark_price','close','last_price','spot_price','price']);
-    box.innerHTML+=metric(a+' · exchange ticker',price==null?'See raw API':fmt(Number(price)),undefined);
-   }
-  }catch(e){box.innerHTML+=metric(a+' market data','Unavailable',false);}
-  try{
-   const d=await getJson('/analytics/options?asset='+a);
-   opt.innerHTML+='<section class="card"><h3>'+a+' Options</h3><div class="grid">'+metric('Contracts',fmt(d.contracts))+metric('Call OI',fmt(d.call_open_interest))+metric('Put OI',fmt(d.put_open_interest))+metric('PCR',d.pcr_by_open_interest==null?'—':Number(d.pcr_by_open_interest).toFixed(3))+metric('Max Pain',fmt(d.max_pain_estimate))+'</div><small class="muted">Expiry: '+(d.expiry_date||'All returned expiries')+'</small></section>';
-  }catch(e){opt.innerHTML+='<section class="card warn">'+a+' analytics error: '+e.message+'</section>';}
- }
-}
-
-async function one(a){let url='/backtest/'+a+'?resolution='+$('resolution').value+'&days='+$('days').value;let r=await fetch(url);let d=await r.json();if(!r.ok)throw Error(a+': '+(d.detail||r.status));return d}
-function panel(d){let net=Number(d.net_return_pct),gross=Number(d.gross_return_pct);return '<section class="card"><h2>'+d.asset+' <small>'+d.resolution+' • '+d.candles+' candles</small></h2><div class="grid">'+metric('Net return',fmt(d.net_return_pct)+'%',net>=0)+metric('Win rate',fmt(d.win_rate_pct)+'%')+metric('Closed trades',fmt(d.closed_trades))+metric('Max drawdown',fmt(d.max_drawdown_pct)+'%',false)+metric('Gross return',fmt(d.gross_return_pct)+'%',gross>=0)+metric('Profit factor',fmt(d.profit_factor))+metric('Long trades',fmt(d.long_trades))+metric('Short trades',fmt(d.short_trades))+'</div><p class="muted">'+(d.long_short_strategy||'')+'</p><table><tr><th>Fee per side</th><td>'+fmt(d.fee_assumption?.taker_fee_per_side_pct)+'%</td></tr><tr><th>GST on fee</th><td>'+fmt(d.fee_assumption?.gst_on_fee_pct)+'%</td></tr><tr><th>Slippage per side</th><td>'+fmt(d.slippage_assumption_per_side_pct)+'%</td></tr></table></section>'}
-function metric(t,v,pos){return '<div class="card"><small>'+t+'</small><div class="metric '+(pos===undefined?'':pos?'positive':'negative')+'">'+v+'</div></div>'}
-async function run(){$('status').textContent='Exchange candle data fetch ho raha hai…';$('results').innerHTML='';cache=[];let choice=$('asset').value,assets=choice==='BOTH'?['BTC','ETH']:choice==='ALL'?['BTC','ETH','XAUT']:[choice];try{for(const a of assets){$('status').textContent=a+' backtest chal raha hai…';cache.push(await one(a))}$('results').innerHTML=cache.map(panel).join('');$('raw').textContent=JSON.stringify(cache,null,2);$('status').textContent='Backtest complete • '+new Date().toLocaleString()}catch(e){$('status').textContent='Error: '+e.message;$('results').innerHTML='<section class="card warn">Data load nahi hua. Thodi der baad dobara try karein.</section>'}}
-
-async function loadOptions(){
- const a=$('optAsset').value, expiry=$('optExpiry').value.trim();
- $('optStatus').textContent='Live option chain fetch ho rahi hai…';
- $('optTable').querySelector('tbody').innerHTML='';$('optSummary').innerHTML='';
- try{
-  const url='/market/options?asset='+encodeURIComponent(a)+(expiry?'&expiry_date='+encodeURIComponent(expiry):'');
-  const r=await fetch(url), data=await r.json();
-  if(!r.ok)throw Error(data.detail||r.status);
-  const rows=Array.isArray(data)?data:(data.result||[]);
-  if(!rows.length){$('optStatus').textContent=a+' ke liye exchange ne koi live option contract nahi diya. XAUT unsupported/empty ho sakta hai; fake data nahi dikhaya jayega.';$('optSymbol').innerHTML='<option value="">No contracts returned</option>';return;}
-  const calls=rows.filter(x=>String(x.contract_type||'').toLowerCase().includes('call'));
-  const puts=rows.filter(x=>String(x.contract_type||'').toLowerCase().includes('put'));
-  const oi=x=>Number(x.open_interest||x.oi||0);
-  const coi=calls.reduce((s,x)=>s+oi(x),0), poi=puts.reduce((s,x)=>s+oi(x),0);
-  const pcr=coi?poi/coi:null;
-  $('optSummary').innerHTML=metric('Contracts',rows.length)+metric('Calls',calls.length)+metric('Puts',puts.length)+metric('Call OI',fmt(coi))+metric('Put OI',fmt(poi))+metric('PCR',pcr==null?'—':pcr.toFixed(3));
-  $('optSymbol').innerHTML='<option value="">Select contract</option>'+rows.filter(x=>x.symbol).map(x=>'<option value="'+String(x.symbol).replace(/"/g,'&quot;')+'">'+x.symbol+'</option>').join('');
-  $('optTable').querySelector('tbody').innerHTML=rows.slice(0,100).map(x=>{
-   const g=x.greeks||{},q=x.quotes||{};
-   return '<tr><td>'+ (x.symbol||'—')+'</td><td>'+(x.contract_type||'—')+'</td><td>'+(x.strike_price||'—')+'</td><td>'+(x.open_interest||x.oi||'—')+'</td><td>'+(x.volume??'—')+'</td><td>'+(x.mark_iv||x.iv||q.ask_iv||'—')+'</td><td>'+(g.delta??x.delta??'—')+'</td><td>'+(g.gamma??x.gamma??'—')+'</td><td>'+(g.theta??x.theta??'—')+'</td><td>'+(g.vega??x.vega??'—')+'</td></tr>';
-  }).join('');
-  $('optStatus').textContent='Live chain loaded: '+rows.length+' contracts · '+new Date().toLocaleTimeString();
- }catch(e){$('optStatus').textContent='Options data error: '+e.message;}
-}
-async function runOptionBacktest(){
- const a=$('optAsset').value,s=$('optSymbol').value;
- if(!s){$('optBtStatus').textContent='Pehle live chain se contract select karein.';return;}
- $('optBtStatus').textContent='Historical option candles fetch/backtest ho raha hai…';
- try{
-  const url='/backtest/options/'+a+'?symbol='+encodeURIComponent(s)+'&resolution='+$('optResolution').value+'&days='+$('optDays').value;
-  const r=await fetch(url),d=await r.json();$('optRaw').textContent=JSON.stringify(d,null,2);
-  if(!r.ok)throw Error(d.detail||r.status);
-  if(d.status==='INSUFFICIENT_HISTORICAL_OPTION_CANDLES'){
-   $('optBtResult').innerHTML='<p class="warn">'+d.message+'</p>';
-  }else{
-   $('optBtResult').innerHTML='<div class="grid">'+metric('Net return',fmt(d.net_return_pct)+'%',Number(d.net_return_pct)>=0)+metric('Win rate',fmt(d.win_rate_pct)+'%')+metric('Closed trades',fmt(d.closed_trades))+metric('Max drawdown',fmt(d.max_drawdown_pct)+'%',false)+metric('Profit factor',fmt(d.profit_factor))+'</div><p class="muted">'+d.strategy+'</p><p class="warn">'+d.warning+'</p>';
-  }
-  $('optBtStatus').textContent='Options backtest response received · PAPER_ONLY';
- }catch(e){$('optBtStatus').textContent='Backtest error: '+e.message;}
-}
-
-loadOverview();setInterval(loadOverview,60000);
+const el=id=>document.getElementById(id),asset=()=>el('asset').value,fmt=x=>Number(x).toLocaleString('en-US',{maximumFractionDigits:2});
+async function get(p){let r=await fetch(p);if(!r.ok)throw Error('HTTP '+r.status);return r.json()}
+async function market(){try{let d=await get('/market/tickers?asset='+asset()),a=Array.isArray(d)?d:(d.result||[]),x=a.find(v=>String(v.symbol||'').includes(asset()+'USD'))||a[0],p=x&&(x.mark_price??x.close??x.last_price??x.price);el('price').textContent=p==null?'Unavailable':'$'+fmt(p);el('apiStatus').textContent='Market API connected'}catch(e){el('price').textContent='Unavailable';el('apiStatus').textContent=e.message}}
+async function signal(){try{let d=await get('/signals/'+asset()+'?resolution='+el('resolution').value);el('signal').textContent=d.signal||'—';el('signal').className='big '+(d.signal==='BUY'?'green':d.signal==='SELL'?'red':'');el('signalDetails').innerHTML='<p>Last price: '+(d.last_price?fmt(d.last_price):'—')+'</p><p>EMA 9: '+(d.ema_9??'—')+' | EMA 21: '+(d.ema_21??'—')+'</p><p>RSI: '+(d.rsi_14_approx??'—')+'</p><small>'+(d.reason||d.message||'')+'</small>'}catch(e){el('signal').textContent='Error';el('signalDetails').textContent=e.message}}
+async function options(){try{let d=await get('/analytics/options?asset='+asset());el('pcr').textContent=d.pcr_by_open_interest==null?'—':Number(d.pcr_by_open_interest).toFixed(3);el('pain').textContent='Max pain: '+(d.max_pain_estimate??'—');el('optionsDetails').innerHTML='<p>Contracts: '+(d.contracts??'—')+'</p><p>Calls: '+(d.call_contracts??'—')+' | Puts: '+(d.put_contracts??'—')+'</p><p>Call OI: '+fmt(d.call_open_interest||0)+'</p><p>Put OI: '+fmt(d.put_open_interest||0)+'</p>'}catch(e){el('pcr').textContent='Unavailable';el('optionsDetails').textContent=e.message}}
+let strategyCache=null;async function fetchStrategies(){el('strategyStatus').textContent='Loading strategies…';try{strategyCache=await get('/strategies/'+asset()+'?resolution='+el('resolution').value+'&days=180');el('strategyStatus').textContent='Combined: '+(strategyCache.combined_signal||strategyCache.status||'—')+' | Agreement: '+(strategyCache.agreement_score??'—')+' | Candles: '+(strategyCache.candles??'—')+' | PAPER_ONLY';renderStrategyButtons();renderStrategyCards(strategyCache.strategies||[]);return strategyCache}catch(e){el('strategyStatus').textContent='Error: '+e.message;throw e}}function renderStrategyButtons(){const box=el('strategyResults');box.innerHTML='';const names=[['ema_rsi','EMA 9/21 + RSI'],['vwap','VWAP + EMA + RSI'],['smc','SMC / Break of Structure'],['fvg','Fair Value Gap'],['liquidity_sweep','Liquidity Sweep'],['support_resistance','Support & Resistance'],['trendline','Trendline Breakout'],['candlestick','Hammer / Inverted Hammer'],['options_oi','Options OI + PCR']];const bar=document.createElement('div');bar.style.gridColumn='1/-1';for(const [key,label] of names){const b=document.createElement('button');b.textContent='Test: '+label;b.onclick=()=>testOneStrategy(key);bar.appendChild(b)}box.appendChild(bar)}function renderStrategyCards(items){const box=el('strategyResults');for(const s of items){const c=document.createElement('section');c.className='card';c.dataset.strategy=s.key;c.innerHTML='<b>'+s.strategy+'</b><div class="big">'+s.signal+'</div><p>Trades: '+s.backtest_trades+' | Win rate: '+(s.win_rate_pct??'—')+'%</p><p>Net return: '+s.net_return_pct+'% | Max DD: '+s.max_drawdown_pct+'%</p><small>'+s.status+'</small>';box.appendChild(c)}}async function loadStrategies(){try{await fetchStrategies()}catch(e){}}async function testOneStrategy(key){try{const d=strategyCache||await fetchStrategies();const s=(d.strategies||[]).find(x=>x.key===key);if(!s){el('strategyStatus').textContent='This strategy returned no result.';return}el('strategyStatus').textContent='Individual test: '+s.strategy+' | '+s.signal+' | '+s.backtest_trades+' trades | Win '+(s.win_rate_pct??'—')+'% | Return '+s.net_return_pct+'% | Max DD '+s.max_drawdown_pct+'%';document.querySelectorAll('[data-strategy]').forEach(x=>x.style.outline=x.dataset.strategy===key?'2px solid #8dbaff':'none')}catch(e){el('strategyStatus').textContent='Error: '+e.message}}\nasync function loadAllAssetsStrategies(){const box=el('allAssetsResults');box.innerHTML='';el('allAssetsStatus').textContent='Loading BTC, ETH and XAUT…';const assets=['BTC','ETH','XAUT'];const results=await Promise.all(assets.map(async a=>{try{return {asset:a,data:await get('/strategies/'+a+'?resolution='+el('resolution').value+'&days=180')}}catch(e){return {asset:a,error:e.message}}}));for(const r of results){const c=document.createElement('section');c.className='card';if(r.error){c.innerHTML='<b>'+r.asset+'</b><p class="red">Error: '+r.error+'</p>'}else{const d=r.data;c.innerHTML='<b>'+r.asset+'</b><div class="big">'+(d.combined_signal||'—')+'</div><p>Score: '+(d.combined_score??d.score??'—')+' | Candles: '+(d.candles??'—')+'</p><p>Mode: '+(d.mode||'PAPER_ONLY')+'</p><p>Strategies returned: '+((d.strategies||[]).length)+'</p>';for(const s of (d.strategies||[])){const p=document.createElement('p');p.innerHTML='<b>'+s.strategy+'</b>: '+s.signal+' | Win '+(s.win_rate_pct??'—')+'% | Return '+(s.net_return_pct??'—')+'% | DD '+(s.max_drawdown_pct??'—')+'%';c.appendChild(p)}}box.appendChild(c)}el('allAssetsStatus').textContent='Comparison complete. Error means endpoint/API response could not be loaded; it does not by itself prove the strategy is broken.'}
+async function loadBacktest(){el('backtest').textContent='Loading…';try{let d=await get('/backtest/'+asset()+'?resolution='+el('resolution').value+'&days=180');el('backtest').innerHTML='<div class="grid"><div>Trades<div class="big">'+(d.closed_trades??d.trades??0)+'</div></div><div>Win rate<div class="big">'+(d.win_rate_pct??'—')+'%</div></div><div>Net return<div class="big">'+(d.net_return_pct??'—')+'%</div></div><div>Max drawdown<div class="big">'+(d.max_drawdown_pct??'—')+'%</div></div></div><p>Long: '+(d.long_trades??'—')+' | Short: '+(d.short_trades??'—')+' | Profit factor: '+(d.profit_factor??'—')+'</p><small>'+ (d.long_short_strategy||'')+'</small><details><summary>Full JSON</summary><pre>'+JSON.stringify(d,null,2)+'</pre></details>'}catch(e){el('backtest').textContent='Error: '+e.message}}
+async function refreshAll(){el('assetName').textContent=asset();el('status').textContent='PAPER_ONLY';await Promise.all([market(),signal(),options()])}
+refreshAll();loadAllAssetsStrategies();setInterval(refreshAll,60000);
 </script></body></html>
