@@ -591,6 +591,132 @@ def mcp_backtest(asset: str = "BTC", resolution: str = "1h", days: int = 180) ->
     """Run a paper-only long/short EMA 9/21 backtest with configurable taker fee, GST and slippage assumptions."""
     return simple_backtest(asset, resolution, days)
 
+
+# Multi-strategy research engine. Signals and historical simulations are PAPER_ONLY.
+def _sma(values, period):
+    part = values[-period:]
+    return sum(part) / len(part) if part else 0.0
+
+def _ema_series(values, period):
+    if not values: return []
+    alpha = 2.0 / (period + 1)
+    out = [values[0]]
+    for value in values[1:]:
+        out.append(alpha * value + (1-alpha) * out[-1])
+    return out
+
+def _rsi_series(values, period=14):
+    out = [50.0] * len(values)
+    for i in range(1, len(values)):
+        start = max(1, i-period+1)
+        changes = [values[j]-values[j-1] for j in range(start, i+1)]
+        gains = sum(max(v,0) for v in changes) / max(len(changes),1)
+        losses = sum(abs(min(v,0)) for v in changes) / max(len(changes),1)
+        out[i] = 100.0 if losses == 0 and gains > 0 else (50.0 if losses == 0 else 100-(100/(1+gains/losses)))
+    return out
+
+def _strategy_directions(rows, options_pcr=None):
+    closes=[number(x.get("close")) for x in rows]
+    highs=[number(x.get("high")) for x in rows]
+    lows=[number(x.get("low")) for x in rows]
+    opens=[number(x.get("open")) for x in rows]
+    volumes=[number(x.get("volume")) for x in rows]
+    n=len(rows)
+    e9,e21=_ema_series(closes,9),_ema_series(closes,21)
+    rsi=_rsi_series(closes)
+    out={k:[0]*n for k in ["ema_rsi","vwap","smc","fvg","liquidity_sweep","support_resistance","trendline","candlestick","options_oi"]}
+    cum_pv=cum_vol=0.0
+    for i in range(n):
+        typical=(highs[i]+lows[i]+closes[i])/3 if all([highs[i],lows[i],closes[i]]) else closes[i]
+        cum_pv += typical*(volumes[i] or 1)
+        cum_vol += volumes[i] or 1
+        vwap=cum_pv/cum_vol if cum_vol else closes[i]
+        if i>=21:
+            if e9[i]>e21[i] and 45<=rsi[i]<=70: out["ema_rsi"][i]=1
+            elif e9[i]<e21[i] and 30<=rsi[i]<=55: out["ema_rsi"][i]=-1
+            if closes[i]>vwap and e9[i]>e21[i] and rsi[i]>50: out["vwap"][i]=1
+            elif closes[i]<vwap and e9[i]<e21[i] and rsi[i]<50: out["vwap"][i]=-1
+            # Swing structure / break of structure using the prior 10 completed bars.
+            prior_hi=max(highs[max(0,i-10):i]); prior_lo=min(lows[max(0,i-10):i])
+            if closes[i]>prior_hi: out["smc"][i]=1
+            elif closes[i]<prior_lo: out["smc"][i]=-1
+            # Three-candle fair-value gap.
+            if i>=2 and lows[i]>highs[i-2]: out["fvg"][i]=1
+            elif i>=2 and highs[i]<lows[i-2]: out["fvg"][i]=-1
+            # Sweep prior 10-bar liquidity then close back inside range.
+            if lows[i]<prior_lo and closes[i]>prior_lo: out["liquidity_sweep"][i]=1
+            elif highs[i]>prior_hi and closes[i]<prior_hi: out["liquidity_sweep"][i]=-1
+            # Rolling support/resistance breakout.
+            if closes[i]>prior_hi: out["support_resistance"][i]=1
+            elif closes[i]<prior_lo: out["support_resistance"][i]=-1
+            # Close beyond a rolling 20-bar regression endpoint.
+            w=20; xs=list(range(w)); ys=closes[i-w:i]
+            xm=sum(xs)/w; ym=sum(ys)/w
+            den=sum((x-xm)**2 for x in xs)
+            slope=sum((x-xm)*(y-ym) for x,y in zip(xs,ys))/den if den else 0
+            projected=ym+slope*(w-1)
+            if closes[i]>projected*1.001 and slope>0: out["trendline"][i]=1
+            elif closes[i]<projected*0.999 and slope<0: out["trendline"][i]=-1
+            # Hammer / inverted hammer with directional close confirmation.
+            body=abs(closes[i]-opens[i]); rng=max(highs[i]-lows[i],1e-12)
+            lower=min(opens[i],closes[i])-lows[i]; upper=highs[i]-max(opens[i],closes[i])
+            if lower>=2*max(body,1e-12) and upper<=body and closes[i]>opens[i]: out["candlestick"][i]=1
+            elif upper>=2*max(body,1e-12) and lower<=body and closes[i]<opens[i]: out["candlestick"][i]=-1
+            if options_pcr is not None:
+                if options_pcr>1.1: out["options_oi"][i]=1
+                elif options_pcr<0.9: out["options_oi"][i]=-1
+    return out
+
+@app.get("/strategies/{asset}")
+def all_strategy_analysis(asset: str, resolution: str = Query("1h", pattern="^(1m|3m|5m|15m|30m|1h|2h|4h|6h|1d|1w)$"), days: int = Query(180, ge=1, le=180)):
+    asset=asset.upper()
+    if asset not in ("BTC","ETH","XAUT"):
+        raise HTTPException(status_code=400, detail="asset must be BTC, ETH or XAUT")
+    data=candles(asset,resolution,days)
+    rows=data.get("candles",[])
+    if len(rows)<30:
+        return {"asset":asset,"mode":"PAPER_ONLY","status":"INSUFFICIENT_DATA","candles":len(rows),"strategies":[]}
+    opt=None
+    try:
+        a=options_analytics(asset)
+        opt=a.get("pcr_by_open_interest")
+    except Exception as exc:
+        log.warning("Options context unavailable for %s: %s",asset,exc)
+    dirs=_strategy_directions(rows,opt)
+    names={
+        "ema_rsi":"EMA 9/21 + RSI","vwap":"VWAP + EMA + RSI","smc":"SMC / Break of Structure",
+        "fvg":"Fair Value Gap","liquidity_sweep":"Liquidity Sweep","support_resistance":"Support & Resistance",
+        "trendline":"Trendline Breakout","candlestick":"Hammer / Inverted Hammer","options_oi":"Options OI + PCR"
+    }
+    results=[]
+    score=0
+    for key,label in names.items():
+        sig=dirs[key][-1]
+        signal="BUY" if sig==1 else "SELL" if sig==-1 else "WAIT"
+        if key!="options_oi" or opt is not None: score+=sig
+        # Transparent, simple next-candle close-to-close directional simulation.
+        rets=[]
+        for i in range(len(rows)-1):
+            d=dirs[key][i]
+            p=number(rows[i].get("close")); nxt=number(rows[i+1].get("close"))
+            if d and p>0 and nxt>0: rets.append(d*(nxt-p)/p)
+        wins=[v for v in rets if v>0]
+        equity=peak=1.0; dd=0.0
+        for v in rets:
+            equity*=1+v; peak=max(peak,equity); dd=max(dd,(peak-equity)/peak if peak else 0)
+        total=1.0
+        for v in rets: total*=1+v
+        results.append({"strategy":label,"key":key,"signal":signal,"backtest_trades":len(rets),
+            "win_rate_pct":round(100*len(wins)/len(rets),2) if rets else None,
+            "net_return_pct":round((total-1)*100,4),"max_drawdown_pct":round(dd*100,4),
+            "status":"ILLUSTRATIVE_PAPER_BACKTEST"})
+    combined="BUY" if score>=2 else "SELL" if score<=-2 else "WAIT"
+    return {"asset":asset,"resolution":resolution,"days_requested":days,"candles":len(rows),
+        "mode":"PAPER_ONLY","combined_signal":combined,"agreement_score":score,
+        "options_pcr_by_open_interest":opt,"strategies":results,
+        "warning":"Illustrative in-sample directional simulation, not validated. No fees, slippage, funding, spread or execution delay are modeled. No orders are placed."}
+
+
 @app.get("/trading/status")
 def trading_status():
     return {
