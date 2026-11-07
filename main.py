@@ -717,6 +717,74 @@ def all_strategy_analysis(asset: str, resolution: str = Query("1h", pattern="^(1
         "warning":"Illustrative in-sample directional simulation, not validated. No fees, slippage, funding, spread or execution delay are modeled. No orders are placed."}
 
 
+@app.get("/market/outlook/{asset}")
+def multi_timeframe_outlook(asset: str, days: int = Query(180, ge=30, le=180)):
+    """Multi-timeframe directional context; uses only fully closed exchange candles."""
+    asset = asset.upper()
+    if asset not in ("BTC", "ETH", "XAUT"):
+        raise HTTPException(status_code=400, detail="asset must be BTC, ETH or XAUT")
+    frames = {"5m": 30, "15m": 60, "1h": days, "4h": days, "1d": days}
+    results = []
+    weights = {"5m": 1, "15m": 1, "1h": 2, "4h": 3, "1d": 4}
+    total_score = 0
+    for resolution, lookback in frames.items():
+        try:
+            raw = candles(asset, resolution, lookback).get("candles", [])
+            seconds = {"5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}[resolution]
+            now = int(time.time())
+            rows = [x for x in raw if number(x.get("time")) > 0
+                    and number(x.get("time")) + seconds <= now
+                    and number(x.get("close")) > 0]
+            closes = [number(x.get("close")) for x in rows]
+            if len(closes) < 55:
+                results.append({"timeframe": resolution, "signal": "INSUFFICIENT_DATA",
+                                "candles": len(closes), "status": "NOT_ENOUGH_CLOSED_CANDLES"})
+                continue
+            ema20 = _ema_series(closes, 20)[-1]
+            ema50 = _ema_series(closes, 50)[-1]
+            rsi = _rsi_series(closes)[-1]
+            last = closes[-1]
+            recent = closes[-21:-1]
+            swing_high, swing_low = max(recent), min(recent)
+            if last > ema20 > ema50 and rsi >= 52:
+                score, signal = 1, "BULLISH"
+            elif last < ema20 < ema50 and rsi <= 48:
+                score, signal = -1, "BEARISH"
+            else:
+                score, signal = 0, "SIDEWAYS / MIXED"
+            if last > swing_high:
+                structure = "BREAKOUT_ABOVE_20_BAR_HIGH"
+            elif last < swing_low:
+                structure = "BREAKDOWN_BELOW_20_BAR_LOW"
+            else:
+                structure = "INSIDE_20_BAR_RANGE"
+            total_score += score * weights[resolution]
+            results.append({
+                "timeframe": resolution, "signal": signal, "score": score,
+                "last_closed_price": round(last, 4), "ema20": round(ema20, 4),
+                "ema50": round(ema50, 4), "rsi14_approx": round(rsi, 2),
+                "swing_high_20": round(swing_high, 4), "swing_low_20": round(swing_low, 4),
+                "market_structure": structure, "candles": len(closes),
+                "lookback_days": lookback, "status": "OK"
+            })
+        except Exception as exc:
+            log.warning("Multi-timeframe outlook failed %s %s: %s", asset, resolution, exc)
+            results.append({"timeframe": resolution, "signal": "UNAVAILABLE",
+                            "status": "API_ERROR", "message": str(exc)[:240]})
+    if total_score >= 5:
+        overall = "BULLISH BIAS"
+    elif total_score <= -5:
+        overall = "BEARISH BIAS"
+    else:
+        overall = "MIXED / WAIT"
+    return {
+        "asset": asset, "overall_bias": overall, "weighted_score": total_score,
+        "timeframes": results, "mode": "PAPER_ONLY",
+        "method": "Closed candles only; EMA20/50 trend, approximate RSI14 and 20-bar structure. Higher timeframes carry more weight.",
+        "warning": "This is a probabilistic market-bias dashboard, not a guaranteed price prediction or trade instruction."
+    }
+
+
 @app.get("/trading/status")
 def trading_status():
     return {
