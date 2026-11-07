@@ -800,6 +800,17 @@ def paper_plan(asset: str):
         "stop_loss": round(stop_loss, 2),
         "target_1": round(target_1, 2),
         "target_2": round(target_2, 2),
+        "trailing_stop": {
+            "enabled": True,
+            "activation": "Only after target_1 is reached",
+            "activation_price": round(target_1, 2),
+            "trail_distance": round(atr_value, 2),
+            "distance_atr_multiple": 1.0,
+            "long_rule": "After activation: highest price since activation minus trail_distance",
+            "short_rule": "After activation: lowest price since activation plus trail_distance",
+            "mode": "PAPER_ONLY",
+            "note": "This is a trailing-stop rule, not an automatically tracked or exchange-placed stop order."
+        },
         "risk_reward": "1:1.5 and 1:2",
         "sizing": "Not calculated; account balance and maximum risk per trade are not configured.",
         "signal_details": signal_data,
