@@ -426,7 +426,7 @@ def simple_backtest(
 
 
 
-# Timeframe-specific entry/stop/target analysis. Read-only; no orders are placed.
+# Multi-factor confluence setup. All calculations use closed candles; read-only.
 @app.get("/trade/setup/{asset}")
 def timeframe_trade_setup(
     asset: str,
@@ -436,79 +436,127 @@ def timeframe_trade_setup(
     asset = asset.upper()
     if asset not in ("BTC", "ETH", "XAUT"):
         raise HTTPException(status_code=400, detail="asset must be BTC, ETH or XAUT")
-    days_by_tf = {"1m": 3, "3m": 7, "5m": 30, "15m": 60, "30m": 90,
-                  "1h": 180, "2h": 180, "4h": 180, "6h": 180, "1d": 180}
-    seconds_by_tf = {"1m":60, "3m":180, "5m":300, "15m":900, "30m":1800,
-                     "1h":3600, "2h":7200, "4h":14400, "6h":21600, "1d":86400}
+    days_by_tf = {"1m":3,"3m":7,"5m":30,"15m":60,"30m":90,"1h":180,"2h":180,"4h":180,"6h":180,"1d":180}
+    secs = {"1m":60,"3m":180,"5m":300,"15m":900,"30m":1800,"1h":3600,"2h":7200,"4h":14400,"6h":21600,"1d":86400}
     raw = candles(asset, resolution, days_by_tf[resolution]).get("candles", [])
-    now = int(time.time())
-    interval = seconds_by_tf[resolution]
-    rows = [x for x in raw if number(x.get("time")) > 0
-            and number(x.get("time")) + interval <= now
+    interval, now = secs[resolution], int(time.time())
+    rows = [x for x in raw if number(x.get("time")) > 0 and number(x.get("time"))+interval <= now
             and all(number(x.get(k)) > 0 for k in ("open","high","low","close"))]
-    rows.sort(key=lambda x: number(x.get("time")))
-    if len(rows) < 55:
-        return {"asset":asset,"timeframe":resolution,"signal":"WAIT",
-                "status":"INSUFFICIENT_CLOSED_CANDLES","candles":len(rows),
-                "mode":"PAPER_ONLY","reason":"Selected timeframe par 55 fully closed candles available nahi hain."}
-    closes=[number(x["close"]) for x in rows]
-    highs=[number(x["high"]) for x in rows]
-    lows=[number(x["low"]) for x in rows]
-    e9=_ema_series(closes,9)[-1]
-    e21=_ema_series(closes,21)[-1]
-    e50=_ema_series(closes,50)[-1]
-    rsi=_rsi_series(closes,14)[-1]
-    tr=[]
-    for i in range(1,len(rows)):
-        tr.append(max(highs[i]-lows[i],abs(highs[i]-closes[i-1]),abs(lows[i]-closes[i-1])))
-    atr=sum(tr[-14:])/14
-    last=rows[-1]
-    entry=closes[-1]
-    prior_high=max(highs[-6:-1])
-    prior_low=min(lows[-6:-1])
-    direction="WAIT"
-    reasons=[]
-    if e9>e21 and entry>e50 and rsi>=52 and rsi<=68:
-        direction="BUY"
-        reasons=["EMA 9, EMA 21 se upar hai: short-term momentum bullish.",
-                 "Close EMA 50 ke upar hai: selected timeframe ka trend bullish.",
-                 "RSI 52–68 hai: momentum positive hai, extreme overbought zone nahi."]
-    elif e9<e21 and entry<e50 and rsi>=32 and rsi<=48:
-        direction="SELL"
-        reasons=["EMA 9, EMA 21 se neeche hai: short-term momentum bearish.",
-                 "Close EMA 50 ke neeche hai: selected timeframe ka trend bearish.",
-                 "RSI 32–48 hai: momentum negative hai, extreme oversold zone nahi."]
-    else:
-        reasons=["EMA 9/21, EMA 50 aur RSI ek hi direction confirm nahi kar rahe; chase entry se bachein."]
+    rows.sort(key=lambda x:number(x.get("time")))
+    if len(rows) < 60:
+        return {"asset":asset,"timeframe":resolution,"signal":"WAIT","status":"INSUFFICIENT_CLOSED_CANDLES",
+                "candles":len(rows),"mode":"PAPER_ONLY","reason":"Is timeframe par kam se kam 60 fully closed candles chahiye."}
+
+    op=[number(x["open"]) for x in rows]; hi=[number(x["high"]) for x in rows]
+    lo=[number(x["low"]) for x in rows]; cl=[number(x["close"]) for x in rows]
+    vol=[max(0,number(x.get("volume"))) for x in rows]
+    e9=_ema_series(cl,9)[-1]; e20=_ema_series(cl,20)[-1]; e50=_ema_series(cl,50)[-1]
+    rsi=_rsi_series(cl,14)[-1]
+    tr=[max(hi[i]-lo[i],abs(hi[i]-cl[i-1]),abs(lo[i]-cl[i-1])) for i in range(1,len(rows))]
+    atr=sum(tr[-14:])/max(1,len(tr[-14:]))
+    last=len(rows)-1; price=cl[-1]
+    # Rolling 20-bar VWAP; exchange volume may be absent, in which case disclose fallback.
+    vwindow=vol[-20:]; typical=[(hi[i]+lo[i]+cl[i])/3 for i in range(len(rows)-20,len(rows))]
+    vwap_volume=sum(vwindow)
+    vwap=sum(typical[j]*(vwindow[j] if vwap_volume>0 else 1) for j in range(20))/(vwap_volume if vwap_volume>0 else 20)
+    volume_available=vwap_volume>0
+    avg_vol=sum(vol[-21:-1])/20 if len(vol)>=21 else 0
+    vol_ratio=(vol[-1]/avg_vol) if avg_vol>0 else None
+    # Liquidity sweep: wick through prior 20-bar extreme then close back inside.
+    prior_hi=max(hi[-21:-1]); prior_lo=min(lo[-21:-1])
+    bull_sweep=lo[-1]<prior_lo and price>prior_lo
+    bear_sweep=hi[-1]>prior_hi and price<prior_hi
+    # Structure break confirmed by candle close beyond prior 10 completed bars.
+    range_hi=max(hi[-11:-1]); range_lo=min(lo[-11:-1])
+    bull_bos=price>range_hi; bear_bos=price<range_lo
+    # Three-candle imbalance/FVG on latest closed candle.
+    bull_fvg=lo[-1]>hi[-3]; bear_fvg=hi[-1]<lo[-3]
+    # Latest candle rejection / body quality.
+    body=abs(cl[-1]-op[-1]); lower_wick=min(op[-1],cl[-1])-lo[-1]; upper_wick=hi[-1]-max(op[-1],cl[-1])
+    bull_reject=cl[-1]>op[-1] and lower_wick>=max(body*1.5,atr*0.08)
+    bear_reject=cl[-1]<op[-1] and upper_wick>=max(body*1.5,atr*0.08)
+
+    components=[]
+    score=0
+    def add(name, direction, weight, detail):
+        nonlocal score
+        points=direction*weight
+        score+=points
+        components.append({"factor":name,"reading":detail,"direction":"BULLISH" if direction>0 else "BEARISH" if direction<0 else "NEUTRAL",
+                           "score":points,"max_score":weight})
+    add("EMA 9 / EMA 20",1 if e9>e20 else -1 if e9<e20 else 0,2,
+        f"EMA9={e9:.4f}; EMA20={e20:.4f}; {'9 above 20' if e9>e20 else '9 below 20' if e9<e20 else 'overlap'}")
+    add("EMA 50 trend",1 if price>e50 else -1 if price<e50 else 0,2,
+        f"Close={price:.4f}; EMA50={e50:.4f}")
+    add("RSI 14",1 if 52<=rsi<=68 else -1 if 32<=rsi<=48 else 0,1,
+        f"RSI={rsi:.2f}; bullish band 52–68, bearish band 32–48")
+    add("VWAP 20",1 if price>vwap else -1 if price<vwap else 0,1,
+        f"Close={price:.4f}; VWAP20={vwap:.4f}; volume {'available' if volume_available else 'missing, equal-weight fallback used'}")
+    add("Liquidity sweep",1 if bull_sweep else -1 if bear_sweep else 0,3,
+        "Bullish sweep: low pierced prior 20-bar low and reclaimed" if bull_sweep else "Bearish sweep: high pierced prior 20-bar high and closed back below" if bear_sweep else "No confirmed sweep of prior 20-bar high/low")
+    add("Break of structure",1 if bull_bos else -1 if bear_bos else 0,2,
+        "Close broke prior 10-bar high" if bull_bos else "Close broke prior 10-bar low" if bear_bos else "No 10-bar closing break")
+    add("Fair Value Gap",1 if bull_fvg else -1 if bear_fvg else 0,1,
+        "Bullish 3-candle gap" if bull_fvg else "Bearish 3-candle gap" if bear_fvg else "No fresh 3-candle gap")
+    add("Volume expansion",1 if vol_ratio is not None and vol_ratio>=1.5 and price>op[-1] else -1 if vol_ratio is not None and vol_ratio>=1.5 and price<op[-1] else 0,1,
+        f"Latest / prior-20 average volume={vol_ratio:.2f}x" if vol_ratio is not None else "Volume unavailable")
+    add("Candle rejection",1 if bull_reject else -1 if bear_reject else 0,1,
+        "Bullish lower-wick rejection" if bull_reject else "Bearish upper-wick rejection" if bear_reject else "No strong rejection candle")
+
+    # Higher timeframe trend alignment; only closed candles count.
+    htf=[]
+    htf_frames=["15m","1h"] if resolution in ("1m","3m","5m") else ["1h","4h"] if resolution in ("15m","30m") else ["4h","1d"]
+    for tf in htf_frames:
+        try:
+            hraw=candles(asset,tf,30).get("candles",[])
+            hrows=[x for x in hraw if number(x.get("time"))>0 and number(x.get("time"))+secs[tf]<=now and number(x.get("close"))>0]
+            hcl=[number(x["close"]) for x in hrows]
+            if len(hcl)>=55:
+                h20=_ema_series(hcl,20)[-1]; h50=_ema_series(hcl,50)[-1]
+                hs=1 if hcl[-1]>h20>h50 else -1 if hcl[-1]<h20<h50 else 0
+                htf.append({"timeframe":tf,"signal":"BULLISH" if hs>0 else "BEARISH" if hs<0 else "MIXED",
+                            "close":round(hcl[-1],4),"ema20":round(h20,4),"ema50":round(h50,4)})
+                add("Higher timeframe "+tf,hs,2,f"Close={hcl[-1]:.4f}; EMA20={h20:.4f}; EMA50={h50:.4f}")
+            else:
+                htf.append({"timeframe":tf,"signal":"INSUFFICIENT_DATA"})
+        except Exception as exc:
+            htf.append({"timeframe":tf,"signal":"UNAVAILABLE","detail":str(exc)[:120]})
+
+    max_score=sum(x["max_score"] for x in components)
+    threshold=max(7,round(max_score*0.45))
+    # Avoid chasing after a large candle; require confirmation beyond current closed candle.
+    direction="BUY" if score>=threshold else "SELL" if score<=-threshold else "WAIT"
+    reasons=[f"{x['factor']}: {x['reading']} (score {x['score']:+d})" for x in components]
     result={"asset":asset,"timeframe":resolution,"signal":direction,"mode":"PAPER_ONLY",
-            "last_closed_candle_time":int(number(last.get("time"))),
-            "last_closed_price":round(entry,4),"ema9":round(e9,4),"ema21":round(e21,4),
-            "ema50":round(e50,4),"rsi14":round(rsi,2),"atr14":round(atr,4),
-            "recent_swing_high_5":round(prior_high,4),"recent_swing_low_5":round(prior_low,4),
-            "logic":reasons,"target_points_requested":target_points}
+        "status":"NO_TRADE" if direction=="WAIT" else "CONFLUENCE_SETUP",
+        "last_closed_candle_time":int(number(rows[-1].get("time"))),"last_closed_price":round(price,4),
+        "ema9":round(e9,4),"ema20":round(e20,4),"ema50":round(e50,4),"rsi14":round(rsi,2),
+        "vwap20":round(vwap,4),"atr14":round(atr,4),"volume_ratio":round(vol_ratio,2) if vol_ratio is not None else None,
+        "confluence_score":score,"max_confluence_score":max_score,"decision_threshold":threshold,
+        "components":components,"higher_timeframes":htf,"logic":reasons,
+        "liquidity_sweep":{"bullish":bull_sweep,"bearish":bear_sweep,"prior_20bar_high":round(prior_hi,4),"prior_20bar_low":round(prior_lo,4)},
+        "structure":{"bullish_bos":bull_bos,"bearish_bos":bear_bos,"prior_10bar_high":round(range_hi,4),"prior_10bar_low":round(range_lo,4)},
+        "target_points_requested":target_points}
     if direction=="WAIT":
-        result.update({"status":"NO_TRADE","entry":None,"stop_loss":None,
-                       "target_1":None,"target_2":None,
-                       "why_no_trade":"Trend + momentum confirmation incomplete."})
+        result.update({"entry":None,"stop_loss":None,"target_1":None,"target_2":None,
+            "why_no_trade":"Weighted confluence score threshold tak nahi pahuncha. Sirf EMA/RSI ke aadhar par trade nahi diya jayega."})
         return result
-    risk=max(1.2*atr, entry-prior_low if direction=="BUY" else prior_high-entry)
+    swing_stop=(price-prior_lo) if direction=="BUY" else (prior_hi-price)
+    risk=max(1.2*atr,swing_stop)
     if risk<=0:
-        result.update({"signal":"WAIT","status":"INVALID_RISK_LEVELS",
-                       "why_no_trade":"Valid swing/ATR stop distance calculate nahi hua."})
+        result.update({"signal":"WAIT","status":"INVALID_RISK_LEVELS","why_no_trade":"ATR/swing stop invalid."})
         return result
-    sl=entry-risk if direction=="BUY" else entry+risk
-    t1=entry+target_points if direction=="BUY" else entry-target_points
-    t2=entry+2*target_points if direction=="BUY" else entry-2*target_points
+    sl=price-risk if direction=="BUY" else price+risk
+    t1=price+target_points if direction=="BUY" else price-target_points
+    t2=price+2*target_points if direction=="BUY" else price-2*target_points
     rr=target_points/risk
     result.update({"status":"SETUP_READY" if rr>=1.5 else "WAIT_LOW_RISK_REWARD",
-        "entry_type":"Next candle confirmation; current close is reference, not guaranteed fill",
-        "entry":round(entry,4),"stop_loss":round(sl,4),
-        "target_1":round(t1,4),"target_2":round(t2,4),
+        "entry_type":"Only after next candle confirms direction; last close is reference, not a market order",
+        "entry":round(price,4),"stop_loss":round(sl,4),"target_1":round(t1,4),"target_2":round(t2,4),
         "risk_points":round(risk,4),"reward_risk_to_target_1":round(rr,2),
-        "why_trade":("Trend and momentum agree on the selected timeframe." if rr>=1.5 else
-                     "Direction is aligned, but the requested target does not provide 1:1.5 reward/risk; wait."),
-        "trailing_stop_rule":"After Target 1, trail by 1 ATR from the best price reached; illustrative rule only.",
-        "warning":"Closed-candle analysis only. Entry is a reference, not a live executable order. Fees/slippage may change levels. No orders are placed; not validated or guaranteed."})
+        "why_trade":"Multiple independent factors align; review component scores and higher-timeframe context." if rr>=1.5 else "Confluence direction exists, but requested target gives less than 1:1.5 reward/risk; wait.",
+        "trailing_stop_rule":"After Target 1, trail by 1 ATR from the best price reached; paper rule only.",
+        "warning":"Confluence is a scoring model, not perfect or guaranteed. Candle close data only; fees/slippage may alter levels. No orders are placed."})
     return result
 
 # Public real-time market feed. This relays Delta's public WebSocket only.
