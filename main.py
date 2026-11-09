@@ -73,7 +73,7 @@ def health():
     return {"status": "ok", "service": "delta-ai-trading-bot-v2", "mode": "PAPER_ONLY"}
 
 @app.get("/market/tickers")
-def market_tickers(asset: str = Query("BTC", pattern="^(BTC|ETH)$")):
+def market_tickers(asset: str = Query("BTC", pattern="^(BTC|ETH|XAUT)$")):
     return delta_get("/v2/tickers", {
         "underlying_asset_symbols": asset,
         "contract_types": "perpetual_futures,futures"
@@ -760,10 +760,19 @@ def _strategy_directions(rows, options_pcr=None):
     rsi=_rsi_series(closes)
     out={k:[0]*n for k in ["ema_rsi","vwap","smc","fvg","liquidity_sweep","support_resistance","trendline","candlestick","options_oi"]}
     cum_pv=cum_vol=0.0
+    active_day=None
     for i in range(n):
+        # Reset VWAP at each UTC day boundary; do not anchor it across the full 180-day history.
+        stamp=int(number(rows[i].get("time")))
+        candle_day=stamp//86400 if stamp>0 else active_day
+        if active_day is not None and candle_day != active_day:
+            cum_pv=cum_vol=0.0
+        active_day=candle_day
         typical=(highs[i]+lows[i]+closes[i])/3 if all([highs[i],lows[i],closes[i]]) else closes[i]
-        cum_pv += typical*(volumes[i] or 1)
-        cum_vol += volumes[i] or 1
+        # Missing exchange volume is disclosed separately; equal weighting is only a fallback.
+        weight=volumes[i] if volumes[i]>0 else 1.0
+        cum_pv += typical*weight
+        cum_vol += weight
         vwap=cum_pv/cum_vol if cum_vol else closes[i]
         if i>=21:
             if e9[i]>e21[i] and 45<=rsi[i]<=70: out["ema_rsi"][i]=1
@@ -796,9 +805,9 @@ def _strategy_directions(rows, options_pcr=None):
             lower=min(opens[i],closes[i])-lows[i]; upper=highs[i]-max(opens[i],closes[i])
             if lower>=2*max(body,1e-12) and upper<=body and closes[i]>opens[i]: out["candlestick"][i]=1
             elif upper>=2*max(body,1e-12) and lower<=body and closes[i]<opens[i]: out["candlestick"][i]=-1
-            if options_pcr is not None:
-                if options_pcr>1.1: out["options_oi"][i]=1
-                elif options_pcr<0.9: out["options_oi"][i]=-1
+            # Current options PCR is deliberately NOT copied into historical candles.
+            # Historical option-chain snapshots are not available in this backtest, so doing
+            # so would introduce look-ahead bias. PCR is applied only to the current live vote.
     return out
 
 @app.get("/strategies/{asset}")
@@ -826,14 +835,25 @@ def all_strategy_analysis(asset: str, resolution: str = Query("1h", pattern="^(1
     score=0
     for key,label in names.items():
         sig=dirs[key][-1]
+        if key=="options_oi":
+            # Current PCR is context only; it has no historical time series to backtest.
+            sig=1 if opt is not None and opt>1.1 else -1 if opt is not None and opt<0.9 else 0
+            signal="BUY" if sig==1 else "SELL" if sig==-1 else "WAIT"
+            results.append({"strategy":label,"key":key,"signal":signal,"backtest_trades":0,
+                "win_rate_pct":None,"net_return_pct":None,"max_drawdown_pct":None,
+                "status":"LIVE_CONTEXT_ONLY_NO_HISTORICAL_PCR_REPLAY",
+                "note":"Current option-chain PCR is not backtested against historical candles because historical PCR snapshots are unavailable."})
+            if opt is not None: score+=sig
+            continue
         signal="BUY" if sig==1 else "SELL" if sig==-1 else "WAIT"
-        if key!="options_oi" or opt is not None: score+=sig
-        # Transparent, simple next-candle close-to-close directional simulation.
+        score+=sig
+        # Signal is formed at candle close and evaluated from the next candle open to close.
         rets=[]
         for i in range(len(rows)-1):
             d=dirs[key][i]
-            p=number(rows[i].get("close")); nxt=number(rows[i+1].get("close"))
-            if d and p>0 and nxt>0: rets.append(d*(nxt-p)/p)
+            entry=number(rows[i+1].get("open"))
+            exit_price=number(rows[i+1].get("close"))
+            if d and entry>0 and exit_price>0: rets.append(d*(exit_price-entry)/entry)
         wins=[v for v in rets if v>0]
         equity=peak=1.0; dd=0.0
         for v in rets:
@@ -843,7 +863,7 @@ def all_strategy_analysis(asset: str, resolution: str = Query("1h", pattern="^(1
         results.append({"strategy":label,"key":key,"signal":signal,"backtest_trades":len(rets),
             "win_rate_pct":round(100*len(wins)/len(rets),2) if rets else None,
             "net_return_pct":round((total-1)*100,4),"max_drawdown_pct":round(dd*100,4),
-            "status":"ILLUSTRATIVE_PAPER_BACKTEST"})
+            "status":"ILLUSTRATIVE_PAPER_BACKTEST_NO_FEES"})
     combined="BUY" if score>=2 else "SELL" if score<=-2 else "WAIT"
     return {"asset":asset,"resolution":resolution,"days_requested":days,"candles":len(rows),
         "mode":"PAPER_ONLY","combined_signal":combined,"agreement_score":score,
