@@ -789,9 +789,13 @@ def _strategy_directions(rows, options_pcr=None):
             # Sweep prior 10-bar liquidity then close back inside range.
             if lows[i]<prior_lo and closes[i]>prior_lo: out["liquidity_sweep"][i]=1
             elif highs[i]>prior_hi and closes[i]<prior_hi: out["liquidity_sweep"][i]=-1
-            # Rolling support/resistance breakout.
-            if closes[i]>prior_hi: out["support_resistance"][i]=1
-            elif closes[i]<prior_lo: out["support_resistance"][i]=-1
+            # Support/resistance reaction is separate from BOS: require a reversal candle
+            # closing near a recent 20-bar boundary, rather than another breakout vote.
+            sr_hi=max(highs[max(0,i-20):i]); sr_lo=min(lows[max(0,i-20):i])
+            if sr_lo>0 and abs(closes[i]-sr_lo)/sr_lo<=0.003 and closes[i]>opens[i]:
+                out["support_resistance"][i]=1
+            elif sr_hi>0 and abs(closes[i]-sr_hi)/sr_hi<=0.003 and closes[i]<opens[i]:
+                out["support_resistance"][i]=-1
             # Close beyond a rolling 20-bar regression endpoint.
             w=20; xs=list(range(w)); ys=closes[i-w:i]
             xm=sum(xs)/w; ym=sum(ys)/w
