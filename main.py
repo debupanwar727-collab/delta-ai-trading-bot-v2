@@ -1043,5 +1043,9 @@ def paper_plan(asset: str):
         "warning": "Illustrative ATR-based levels only. No order is placed; signals and levels are not validated. Check fees, slippage and risk before any real trade."
     }
 
+# Chat assistant routes. Market tools remain read-only and trading mode stays PAPER_ONLY.
+from assistant_api import router as assistant_router
+app.include_router(assistant_router)
+
 # Streamable HTTP MCP endpoint. All exposed tools are read-only.
 app.mount("/mcp", mcp_server.streamable_http_app())
